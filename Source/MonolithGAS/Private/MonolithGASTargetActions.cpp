@@ -520,8 +520,11 @@ FMonolithActionResult FMonolithGASTargetActions::HandleAddTargetingToAbility(con
 		return FMonolithActionResult::Error(TEXT("No EventGraph found in ability Blueprint"));
 	}
 
-	// Create the WaitTargetData ability task node via UK2Node_LatentAbilityCall
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 	UK2Node_LatentAbilityCall* WaitTargetNode = NewObject<UK2Node_LatentAbilityCall>(EventGraph);
+#else
+	UK2Node_BaseAsyncTask* WaitTargetNode = Cast<UK2Node_BaseAsyncTask>(NewObject<UEdGraphNode>(EventGraph, MonolithGAS::GetLatentAbilityCallClass()));
+#endif
 	// ProxyFactoryFunctionName/ProxyFactoryClass/ProxyClass are protected in UE 5.7 — set via reflection
 	{
 		FProperty* FFNProp = WaitTargetNode->GetClass()->FindPropertyByName(TEXT("ProxyFactoryFunctionName"));
@@ -738,8 +741,11 @@ FMonolithActionResult FMonolithGASTargetActions::HandleValidateTargeting(const T
 		{
 			if (!Node) continue;
 
-			// Check for UK2Node_LatentAbilityCall with WaitTargetData
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 			UK2Node_LatentAbilityCall* LatentNode = Cast<UK2Node_LatentAbilityCall>(Node);
+#else
+			UEdGraphNode* LatentNode = (Node && Node->IsA(MonolithGAS::GetLatentAbilityCallClass())) ? Node : nullptr;
+#endif
 			if (LatentNode)
 			{
 				// ProxyFactoryFunctionName is protected in UE 5.7 — read via reflection
@@ -790,7 +796,11 @@ FMonolithActionResult FMonolithGASTargetActions::HandleValidateTargeting(const T
 		if (!Graph) continue;
 		for (UEdGraphNode* Node : Graph->Nodes)
 		{
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 			UK2Node_LatentAbilityCall* LatentNode = Cast<UK2Node_LatentAbilityCall>(Node);
+#else
+			UEdGraphNode* LatentNode = (Node && Node->IsA(MonolithGAS::GetLatentAbilityCallClass())) ? Node : nullptr;
+#endif
 			if (LatentNode)
 			{
 				// ProxyFactoryFunctionName is protected in UE 5.7 — read via reflection

@@ -10,10 +10,9 @@
 #include "Dom/JsonValue.h"
 #include "Editor.h" // GEditor->BeginTransaction / EndTransaction
 
-// IK Rig (T2-1)
-#include "Rig/IKRigDefinition.h"                 // UIKRigDefinition
-#include "RigEditor/IKRigController.h"           // UIKRigController (IKRigEditor module)
-#include "Rig/Solvers/IKRigSolverBase.h"         // FIKRigSolverBase, FIKRigBoneSettingsBase
+// IK Rig (T2-1) — solver access normalised across 5.5 (UObject) / 5.6+ (USTRUCT)
+// by MonolithIKRigCompat.h, which pulls in the correct engine headers per version.
+#include "MonolithIKRigCompat.h"                 // MonolithIKRig::* + UIKRigDefinition/UIKRigController
 
 // ---------------------------------------------------------------------------
 // Mode string <-> namespaced enum (parse/echo by NAME — never by raw int).
@@ -113,7 +112,7 @@ namespace
 	// Reflectively serialise every non-bookkeeping field of a concrete bone-
 	// settings struct into a flat JSON object keyed by property name.
 	TSharedPtr<FJsonObject> BoneSettingsToJson(
-		const UScriptStruct* ConcreteType, const void* StructMemory, const UObject* Owner)
+		const UStruct* ConcreteType, const void* StructMemory, const UObject* Owner)
 	{
 		TSharedPtr<FJsonObject> Out = MakeShared<FJsonObject>();
 		if (!ConcreteType || !StructMemory)
@@ -137,7 +136,7 @@ namespace
 
 	// Solver-type label for echoes. GetNiceName() is WITH_EDITOR-only on the
 	// solver; fall back to the concrete UStruct name when unavailable.
-	FString SolverDisplayName(const UScriptStruct* SolverType)
+	FString SolverDisplayName(const UStruct* SolverType)
 	{
 		return SolverType ? SolverType->GetName() : FString(TEXT("(unknown)"));
 	}
@@ -517,15 +516,9 @@ FMonolithActionResult FMonolithSkeletonRetargetActions::HandleSetIkRigBoneSettin
 			continue;
 		}
 
-		FIKRigSolverBase* Solver = Controller->GetSolverAtIndex(SolverIndex);
-		if (!Solver)
-		{
-			continue;
-		}
-
 		// Solvers that don't support per-bone settings are skipped silently when
 		// targeting "all", but reported explicitly when a specific index was asked.
-		if (!Solver->UsesCustomBoneSettings())
+		if (!MonolithIKRig::SolverUsesBoneSettings(Controller, SolverIndex))
 		{
 			if (bHasSolverIndex)
 			{
@@ -540,8 +533,8 @@ FMonolithActionResult FMonolithSkeletonRetargetActions::HandleSetIkRigBoneSettin
 		// whether the bone is reachable by this solver). Only enforced for the
 		// explicit-index path; the all-solvers path simply skips ineligible solvers.
 		FText CanAddErr;
-		const bool bAlreadyHasSetting = Solver->HasSettingsOnBone(BoneName);
-		if (!bAlreadyHasSetting && !Controller->CanAddBoneSetting(BoneName, SolverIndex, &CanAddErr))
+		const bool bAlreadyHasSetting = MonolithIKRig::SolverHasSettingsOnBone(Controller, SolverIndex, BoneName);
+		if (!bAlreadyHasSetting && !MonolithIKRig::CanAddBoneSetting(Controller, SolverIndex, BoneName, CanAddErr))
 		{
 			if (bHasSolverIndex)
 			{
@@ -556,11 +549,16 @@ FMonolithActionResult FMonolithSkeletonRetargetActions::HandleSetIkRigBoneSettin
 		// Create the bone-setting entry if it doesn't exist yet.
 		if (!bAlreadyHasSetting)
 		{
-			Controller->AddBoneSetting(BoneName, SolverIndex);
+			MonolithIKRig::AddBoneSetting(Controller, SolverIndex, BoneName);
 		}
 
-		const UScriptStruct* ConcreteType = Solver->GetBoneSettingsType();
-		FIKRigBoneSettingsBase* Settings = Solver->GetBoneSettings(BoneName);
+		// Live per-bone settings as a (type, memory) reflectable — on 5.6+ the
+		// solver's concrete USTRUCT + struct memory; on 5.5 the settings UObject's
+		// class + the object itself. The reflective walk below is identical either way.
+		const MonolithIKRig::FReflectable BoneSettings =
+			MonolithIKRig::GetBoneSettings(Controller, SolverIndex, BoneName);
+		const UStruct* ConcreteType = BoneSettings.Type;
+		void* Settings = BoneSettings.Memory;
 		if (!ConcreteType || !Settings)
 		{
 			if (bHasSolverIndex)
@@ -737,14 +735,7 @@ FMonolithActionResult FMonolithSkeletonRetargetActions::HandleGetIkRigBoneSettin
 			continue;
 		}
 
-		FIKRigSolverBase* Solver = Controller->GetSolverAtIndex(SolverIndex);
-		if (!Solver || !Solver->UsesCustomBoneSettings())
-		{
-			continue;
-		}
-
-		const UScriptStruct* ConcreteType = Solver->GetBoneSettingsType();
-		if (!ConcreteType)
+		if (!MonolithIKRig::SolverUsesBoneSettings(Controller, SolverIndex))
 		{
 			continue;
 		}
@@ -753,7 +744,7 @@ FMonolithActionResult FMonolithSkeletonRetargetActions::HandleGetIkRigBoneSettin
 		TArray<FName> BonesToRead;
 		if (bHasBoneFilter)
 		{
-			if (Solver->HasSettingsOnBone(BoneFilter))
+			if (MonolithIKRig::SolverHasSettingsOnBone(Controller, SolverIndex, BoneFilter))
 			{
 				BonesToRead.Add(BoneFilter);
 			}
@@ -761,22 +752,31 @@ FMonolithActionResult FMonolithSkeletonRetargetActions::HandleGetIkRigBoneSettin
 		else
 		{
 			TSet<FName> WithSettings;
-			Solver->GetBonesWithSettings(WithSettings);
+			MonolithIKRig::GetBonesWithSettings(Controller, SolverIndex, WithSettings);
 			BonesToRead = WithSettings.Array();
 		}
+
+		// Concrete bone-settings type for the solver-level echo (bone_settings_struct).
+		// Resolved per bone below; for the header echo we take the first available.
+		const UStruct* SolverBoneSettingsType = nullptr;
 
 		TArray<TSharedPtr<FJsonValue>> BoneEntries;
 		for (const FName& Bone : BonesToRead)
 		{
-			FIKRigBoneSettingsBase* Settings = Solver->GetBoneSettings(Bone);
-			if (!Settings)
+			const MonolithIKRig::FReflectable BoneSettings =
+				MonolithIKRig::GetBoneSettings(Controller, SolverIndex, Bone);
+			if (!BoneSettings.IsValid())
 			{
 				continue;
+			}
+			if (!SolverBoneSettingsType)
+			{
+				SolverBoneSettingsType = BoneSettings.Type;
 			}
 			TSharedPtr<FJsonObject> BoneObj = MakeShared<FJsonObject>();
 			BoneObj->SetStringField(TEXT("bone"), Bone.ToString());
 			BoneObj->SetObjectField(TEXT("settings"),
-				BoneSettingsToJson(ConcreteType, Settings, IkRig));
+				BoneSettingsToJson(BoneSettings.Type, BoneSettings.Memory, IkRig));
 			BoneEntries.Add(MakeShared<FJsonValueObject>(BoneObj));
 		}
 
@@ -788,7 +788,8 @@ FMonolithActionResult FMonolithSkeletonRetargetActions::HandleGetIkRigBoneSettin
 
 		TSharedPtr<FJsonObject> SolverObj = MakeShared<FJsonObject>();
 		SolverObj->SetNumberField(TEXT("solver_index"), SolverIndex);
-		SolverObj->SetStringField(TEXT("bone_settings_struct"), ConcreteType->GetName());
+		SolverObj->SetStringField(TEXT("bone_settings_struct"),
+			SolverBoneSettingsType ? SolverBoneSettingsType->GetName() : FString(TEXT("(none)")));
 		SolverObj->SetArrayField(TEXT("bones"), BoneEntries);
 		SolverResults.Add(MakeShared<FJsonValueObject>(SolverObj));
 	}

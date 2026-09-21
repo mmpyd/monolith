@@ -15,6 +15,7 @@
 #include "Perception/AIPerceptionComponent.h"
 #include "Serialization/JsonWriter.h"
 #include "Serialization/JsonSerializer.h"
+#include "Runtime/Launch/Resources/Version.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogAIIndexer, Log, All);
 
@@ -282,7 +283,14 @@ void FAIIndexer::IndexBehaviorTree(UBehaviorTree* BT, const FString& AssetPath, 
 
 	FString PropsStr;
 	auto Writer = TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&PropsStr);
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 	FJsonSerializer::Serialize(Props, *Writer, true);
+#else
+	// UE 5.5 FJsonSerializer has no TSharedPtr<FJsonObject> Serialize overload
+	// (only TSharedRef<FJsonObject>). ToSharedRef() selects it; Props is always
+	// valid here (MakeShared), so this yields identical output.
+	FJsonSerializer::Serialize(Props.ToSharedRef(), *Writer, true);
+#endif
 	Node.Properties = PropsStr;
 
 	if (Node.AssetId > 0)
@@ -344,7 +352,14 @@ void FAIIndexer::IndexBlackboard(UBlackboardData* BB, const FString& AssetPath, 
 
 	FString PropsStr;
 	auto Writer = TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&PropsStr);
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 	FJsonSerializer::Serialize(Props, *Writer, true);
+#else
+	// UE 5.5 FJsonSerializer has no TSharedPtr<FJsonObject> Serialize overload
+	// (only TSharedRef<FJsonObject>). ToSharedRef() selects it; Props is always
+	// valid here (MakeShared), so this yields identical output.
+	FJsonSerializer::Serialize(Props.ToSharedRef(), *Writer, true);
+#endif
 	Node.Properties = PropsStr;
 
 	if (Node.AssetId > 0)
@@ -389,7 +404,14 @@ void FAIIndexer::IndexAIController(UBlueprint* BP, const FString& AssetPath, FMo
 
 	FString PropsStr;
 	auto Writer = TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&PropsStr);
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 	FJsonSerializer::Serialize(Props, *Writer, true);
+#else
+	// UE 5.5 FJsonSerializer has no TSharedPtr<FJsonObject> Serialize overload
+	// (only TSharedRef<FJsonObject>). ToSharedRef() selects it; Props is always
+	// valid here (MakeShared), so this yields identical output.
+	FJsonSerializer::Serialize(Props.ToSharedRef(), *Writer, true);
+#endif
 	Node.Properties = PropsStr;
 
 	if (Node.AssetId > 0)

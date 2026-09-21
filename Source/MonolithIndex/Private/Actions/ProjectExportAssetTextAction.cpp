@@ -3,7 +3,12 @@
 #include "MonolithParamSchema.h"
 #include "Exporters/Exporter.h"
 #include "UnrealExporter.h"
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 #include "Misc/StringOutputDevice.h"
+#else
+// UE 5.5 declares FStringOutputDevice in Containers/UnrealString.h (pulled in via CoreMinimal).
+#include "Containers/UnrealString.h"
+#endif
 #include "UObject/UObjectHash.h"
 #include "UObject/UObjectMarks.h"
 

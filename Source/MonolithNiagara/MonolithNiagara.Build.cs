@@ -22,6 +22,10 @@ public class MonolithNiagara : ModuleRules
 			"NiagaraCore",
 			"NiagaraEditor",
 			"NiagaraShader",
+			// Sequencer: on UE 5.5 the NiagaraEditor public header
+			// NiagaraSystemScalabilityViewModel.h includes ISequencerModule.h, so the
+			// Sequencer module's public include path must be on our search path.
+			"Sequencer",
 			"Json",
 			"JsonUtilities",
 			"AssetTools",
@@ -42,7 +46,8 @@ public class MonolithNiagara : ModuleRules
 		// $LeakSentinels (that list is for OPTIONAL-plugin deps with no guaranteed load order; this
 		// is engine-private source of an already-hard-dep module, gated OFF in release builds).
 		bool bReleaseBuild = System.Environment.GetEnvironmentVariable("MONOLITH_RELEASE_BUILD") == "1";
-		if (bReleaseBuild)
+		bool bIsUE55OrOlder = Target.Version.MajorVersion == 5 && Target.Version.MinorVersion <= 5;
+		if (bReleaseBuild || bIsUE55OrOlder)
 		{
 			PublicDefinitions.Add("WITH_NIAGARA_WIZARD_PRIVATE=0");
 		}

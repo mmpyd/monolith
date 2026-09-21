@@ -8,6 +8,7 @@
 // 2.B.7 batch_retheme
 // 2.B.8 configure_common_text
 // 2.B.9 configure_common_border
+#include "Runtime/Launch/Resources/Version.h"  // ENGINE_MAJOR/MINOR_VERSION for the 5.5 SetMaxDimensions gate
 #include "MonolithCommonUIHelpers.h"
 
 #if WITH_COMMONUI
@@ -258,6 +259,7 @@ namespace MonolithCommonUIButton
 			Btn->SetMinDimensions(MinW, MinH);
 			Applied.Add(TEXT("min_dimensions"));
 		}
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 		int32 MaxW = 0, MaxH = 0;
 		const bool bHasMaxW = Params->TryGetNumberField(TEXT("max_width"), MaxW);
 		const bool bHasMaxH = Params->TryGetNumberField(TEXT("max_height"), MaxH);
@@ -266,6 +268,12 @@ namespace MonolithCommonUIButton
 			Btn->SetMaxDimensions(MaxW, MaxH);
 			Applied.Add(TEXT("max_dimensions"));
 		}
+#else
+		// UE 5.5: UCommonButtonBase has no SetMaxDimensions (only SetMinDimensions).
+		// There is no 5.5 API for max dimensions, so leave max unapplied and do NOT
+		// report "max_dimensions" as applied — the action still succeeds for the
+		// other params. Kept honest per the porting contract.
+#endif
 
 		FString ClickMethodStr;
 		if (Params->TryGetStringField(TEXT("click_method"), ClickMethodStr))
@@ -510,7 +518,7 @@ namespace MonolithCommonUIButton
 
 			ChildWidget->Modify();
 			ChildWidget->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_DoNotDirty);
-			Wbp->OnVariableRemoved(ChildWidgetName);
+			MonolithUI::UnregisterWidgetVarUnconditional(Wbp, ChildWidgetName);
 		}
 
 		Parent->RemoveChild(OldBtn);

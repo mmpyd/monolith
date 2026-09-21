@@ -1,6 +1,7 @@
 #include "MonolithPieInputActions.h"
 #include "MonolithPieObjectActions.h"
 #include "MonolithParamSchema.h"
+#include "Runtime/Launch/Resources/Version.h" // ENGINE_MAJOR/MINOR_VERSION — EnhancedInput subsystem accessor gate
 
 #include "Editor.h"
 #include "Engine/Engine.h"
@@ -208,9 +209,19 @@ namespace
 				bool bDropped = (Action == nullptr);
 				if (Action)
 				{
-					if (UEnhancedInputLocalPlayerSubsystem* Subsystem =
-						ULocalPlayer::GetSubsystemFromController<UEnhancedInputLocalPlayerSubsystem>(
-							ResolvePlayerController(PieWorld, H.PlayerIndex)))
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
+					APlayerController* SubsysPC = ResolvePlayerController(PieWorld, H.PlayerIndex);
+					UEnhancedInputLocalPlayerSubsystem* Subsystem =
+						ULocalPlayer::GetSubsystemFromController<UEnhancedInputLocalPlayerSubsystem>(SubsysPC);
+#else
+					// UE 5.5 has no ULocalPlayer::GetSubsystemFromController; resolve via the
+					// controller's local player, then ULocalPlayer::GetSubsystem<T>(LP).
+					APlayerController* SubsysPC = ResolvePlayerController(PieWorld, H.PlayerIndex);
+					ULocalPlayer* SubsysLP = SubsysPC ? SubsysPC->GetLocalPlayer() : nullptr;
+					UEnhancedInputLocalPlayerSubsystem* Subsystem =
+						ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(SubsysLP);
+#endif
+					if (Subsystem)
 					{
 						Subsystem->InjectInputForAction(Action, H.Value, {}, {});
 					}
@@ -601,8 +612,15 @@ FMonolithActionResult FMonolithPieInputActions::HandleInjectInputAction(const TS
 			TEXT("No player controller at player_index %d in the running PIE world"), PlayerIndex));
 	}
 
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 	UEnhancedInputLocalPlayerSubsystem* Subsystem =
 		ULocalPlayer::GetSubsystemFromController<UEnhancedInputLocalPlayerSubsystem>(PC);
+#else
+	// UE 5.5: resolve via the controller's local player.
+	ULocalPlayer* SubsysLP = PC ? PC->GetLocalPlayer() : nullptr;
+	UEnhancedInputLocalPlayerSubsystem* Subsystem =
+		ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(SubsysLP);
+#endif
 	if (!Subsystem)
 	{
 		return FMonolithActionResult::Error(FString::Printf(

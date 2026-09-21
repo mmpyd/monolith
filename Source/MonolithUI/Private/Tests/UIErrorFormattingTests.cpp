@@ -45,6 +45,7 @@
 #include "Spec/UISpecValidator.h"
 
 #include "MonolithToolRegistry.h"
+#include "MonolithUICommon.h"  // MonolithUI::RegisterWidgetVar (5.5 widget-var gate)
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "Serialization/JsonSerializer.h"
@@ -231,13 +232,13 @@ namespace MonolithUI::ErrorFormattingTests
             UCanvasPanel* Root = Built->WidgetTree->ConstructWidget<UCanvasPanel>(
                 UCanvasPanel::StaticClass(), TEXT("RootCanvas"));
             Built->WidgetTree->RootWidget = Root;
-            Built->OnVariableAdded(Root->GetFName());
+            MonolithUI::RegisterWidgetVar(Built, Root->GetFName());
 
             if (ChildClass)
             {
                 UWidget* Child = Built->WidgetTree->ConstructWidget<UWidget>(ChildClass, ChildName);
                 Root->AddChild(Child);
-                Built->OnVariableAdded(Child->GetFName());
+                MonolithUI::RegisterWidgetVar(Built, Child->GetFName());
             }
 
             FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Built);

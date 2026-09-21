@@ -2,6 +2,8 @@
 #include "MonolithAssetUtils.h"
 #include "MonolithJsonUtils.h"
 #include "MonolithParamSchema.h"
+
+#include "Runtime/Launch/Resources/Version.h"
 #include "MonolithPropertyAccessReader.h"
 #include "MonolithAnimNodeBindingReader.h" // Gap 2 (function bindings) + Gap 12 (pin bindings) read helpers
 
@@ -41,19 +43,30 @@
 #include "Animation/AnimInstance.h"
 #include "AnimationModifier.h"
 #include "AnimationModifiersAssetUserData.h" // apply_anim_modifier persist path (T1-L3 ALT) — stack-register via AddAnimationModifierOfClass
-#include "Rig/IKRigDefinition.h"
 #include "Rig/IKRigSkeleton.h"
-#include "Rig/Solvers/IKRigSolverBase.h" // FIKRigSolverBase::StaticStruct() for add_ik_solver struct enumeration
+// IK Rig solver access normalised across 5.5 (UObject) / 5.6+ (USTRUCT) by
+// MonolithIKRigCompat.h — it pulls in IKRigDefinition.h + IKRigController.h and the
+// correct per-version solver header (IKRigSolverBase.h on 5.6+, IKRigSolver.h on 5.5).
+#include "MonolithIKRigCompat.h"
 #include "JsonObjectConverter.h" // T2-1 get_ikrig_info: reflective solver/bone/goal settings struct -> JSON
-#include "RigEditor/IKRigController.h"
 #include "UObject/UObjectIterator.h"     // TObjectIterator<UStruct> — enumerate live IKRig solver-struct table
 #include "Retargeter/IKRetargeter.h"
 #include "Retargeter/IKRetargetOps.h" // FIKRetargetOpBase / FIKRetargetOpSettingsBase — get_retargeter_info ops[] reflective read
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
+// 5.6+ split the chain-mapping types into their own header. Nothing in this TU
+// names those types directly (chain mapping is driven through the controller's
+// EAutoMapChainType / SetSourceChain, declared in IKRetargeterController.h), so
+// 5.5 simply omits this include — the types live in Retargeter/IKRetargeter.h there.
 #include "Retargeter/IKRetargetChainMapping.h"
+#endif
 #include "RetargetEditor/IKRetargeterController.h"
 #include "RetargetEditor/IKRetargetBatchOperation.h" // batch_retarget_animations — RunRetarget + FIKRetargetBatchOperationContext
 #include "EditorAnimUtils.h"                          // EditorAnimUtils::FNameDuplicationRule (output folder + rename rule)
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 #include "ControlRigBlueprintLegacy.h"
+#else
+#include "ControlRigBlueprint.h"
+#endif
 #include "Rigs/RigHierarchy.h"
 #include "Rigs/RigHierarchyElements.h"
 #include "Rigs/RigHierarchyDefines.h"
@@ -3064,8 +3077,13 @@ FMonolithActionResult FMonolithAnimationActions::HandleGetBlendSpaceInfo(const T
 			}
 			else
 			{
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 				const FTransform RootDelta = SampleSeq->ExtractRootMotionFromRange(
 					0.0, static_cast<double>(PlayLength), FAnimExtractContext());
+#else
+				const FTransform RootDelta = SampleSeq->ExtractRootMotionFromRange(
+					0.0f, static_cast<float>(PlayLength));
+#endif
 				const FVector T = RootDelta.GetTranslation();
 				const float PlanarDist = FVector(T.X, T.Y, 0.0).Size();
 				const float RateScale = (Sample.RateScale != 0.0f) ? Sample.RateScale : 1.0f;
@@ -4700,10 +4718,44 @@ FMonolithActionResult FMonolithAnimationActions::HandleApplyAnimModifier(const T
 		// AnimationModifiersAssetUserData stack (the same stack list_anim_modifiers
 		// reads) so it survives save/reload, THEN set properties + apply. The public
 		// static creates + registers the instance and the owning user-data object.
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 		if (!UAnimationModifiersAssetUserData::AddAnimationModifierOfClass(Seq, ModifierUClass))
 		{
 			return FMonolithActionResult::Error(TEXT("Failed to register modifier in the AnimationModifiers stack"));
 		}
+#else
+		UAnimationModifiersAssetUserData* ModUserData = Seq->GetAssetUserData<UAnimationModifiersAssetUserData>();
+		if (!ModUserData)
+		{
+			ModUserData = NewObject<UAnimationModifiersAssetUserData>(Seq, UAnimationModifiersAssetUserData::StaticClass(), NAME_None, RF_Transactional);
+			Seq->AddAssetUserData(ModUserData);
+		}
+		ModUserData->Modify();
+
+		UAnimationModifier* NewInstance = NewObject<UAnimationModifier>(ModUserData, ModifierUClass, NAME_None, RF_Transactional);
+		if (!NewInstance)
+		{
+			return FMonolithActionResult::Error(TEXT("Failed to instantiate modifier for the AnimationModifiers stack"));
+		}
+		if (FArrayProperty* InstancesProp = FindFProperty<FArrayProperty>(
+				UAnimationModifiersAssetUserData::StaticClass(), TEXT("AnimationModifierInstances")))
+		{
+			FScriptArrayHelper Helper(InstancesProp, InstancesProp->ContainerPtrToValuePtr<void>(ModUserData));
+			const int32 NewIdx = Helper.AddValue();
+			if (FObjectProperty* Inner = CastField<FObjectProperty>(InstancesProp->Inner))
+			{
+				Inner->SetObjectPropertyValue(Helper.GetRawPtr(NewIdx), NewInstance);
+			}
+			else
+			{
+				return FMonolithActionResult::Error(TEXT("AnimationModifierInstances inner property is not an object property"));
+			}
+		}
+		else
+		{
+			return FMonolithActionResult::Error(TEXT("Could not resolve AnimationModifierInstances on UAnimationModifiersAssetUserData"));
+		}
+#endif
 
 		// Recover the freshly-registered instance: locate the user-data object on the
 		// sequence and take the last instance of the requested class (it was Add()ed last).
@@ -5502,40 +5554,38 @@ FMonolithActionResult FMonolithAnimationActions::HandleGetIKRigInfo(const TShare
 	// Solvers
 	TArray<TSharedPtr<FJsonValue>> SolversArr;
 	const int32 NumSolvers = C->GetNumSolvers();
-	const TArray<FInstancedStruct>& SolverStructs = Asset->GetSolverStructs();
 	for (int32 i = 0; i < NumSolvers; ++i)
 	{
 		TSharedPtr<FJsonObject> SolverObj = MakeShared<FJsonObject>();
 		SolverObj->SetNumberField(TEXT("index"), i);
 		SolverObj->SetBoolField(TEXT("enabled"), C->GetSolverEnabled(i));
-		SolverObj->SetStringField(TEXT("start_bone"), C->GetStartBone(i).ToString());
+		SolverObj->SetStringField(TEXT("start_bone"),
+			MonolithIKRig::GetSolverStartBone(C, i).ToString());
+
+		// The solver as a (type, memory) reflectable — 5.6+ the FInstancedStruct's
+		// concrete UScriptStruct + memory; 5.5 the UIKRigSolver's class + object.
+		const MonolithIKRig::FReflectable SolverRef = MonolithIKRig::GetSolverReflectable(Asset, i);
 
 		FString TypeName = TEXT("Unknown");
-		if (SolverStructs.IsValidIndex(i) && SolverStructs[i].GetScriptStruct())
+		if (SolverRef.Type)
 		{
-			TypeName = SolverStructs[i].GetScriptStruct()->GetName();
+			TypeName = SolverRef.Type->GetName();
 		}
 		SolverObj->SetStringField(TEXT("type"), TypeName);
 		SolverObj->SetStringField(TEXT("label"), C->GetSolverUniqueName(i));
 
 		// --- T2-1: reflective per-solver settings dump (solver-agnostic). ---
-		// Each solver is a FIKRigSolverBase-derived USTRUCT stored in the FInstancedStruct
-		// stack; its concrete UScriptStruct carries the solver's own settings PLUS any
-		// per-bone / per-goal settings arrays (e.g. AllBoneSettings on FullBodyIK). One
-		// UStructToJsonObject over the whole struct surfaces all of them reflectively,
-		// regardless of solver type. The settings are read-only here; const GetMemory() is
-		// sufficient. Degrades to an omitted "settings" field on any drift, never errors.
-		if (SolverStructs.IsValidIndex(i))
+		// The concrete solver type (UScriptStruct on 5.6+, UClass on 5.5) carries the
+		// solver's own settings PLUS any per-bone / per-goal settings arrays. One
+		// UStructToJsonObject over the whole thing surfaces all of them reflectively,
+		// regardless of solver type or engine model. Read-only here.
+		// Degrades to an omitted "settings" field on any drift, never errors.
+		if (SolverRef.IsValid())
 		{
-			const UScriptStruct* SolverStruct = SolverStructs[i].GetScriptStruct();
-			const uint8* SolverMemory = SolverStructs[i].GetMemory();
-			if (SolverStruct && SolverMemory)
+			TSharedRef<FJsonObject> SettingsJson = MakeShared<FJsonObject>();
+			if (FJsonObjectConverter::UStructToJsonObject(SolverRef.Type, SolverRef.Memory, SettingsJson, 0, 0))
 			{
-				TSharedRef<FJsonObject> SettingsJson = MakeShared<FJsonObject>();
-				if (FJsonObjectConverter::UStructToJsonObject(SolverStruct, SolverMemory, SettingsJson, 0, 0))
-				{
-					SolverObj->SetObjectField(TEXT("settings"), SettingsJson);
-				}
+				SolverObj->SetObjectField(TEXT("settings"), SettingsJson);
 			}
 		}
 		SolversArr.Add(MakeShared<FJsonValueObject>(SolverObj));
@@ -5641,14 +5691,18 @@ FMonolithActionResult FMonolithAnimationActions::HandleAddIKSolver(const TShared
 	// IKRigLimbSolver and IKRigStretchLimbSolver contain "LimbSolver", so a first-hit substring
 	// match is non-deterministic. The engine matches by struct identity, so we resolve
 	// deterministically: alias/exact/prefix first, gated-unique substring only as a last resort.
-	UScriptStruct* Exact = nullptr;
-	TArray<UScriptStruct*> SubstringMatches;
+	// Enumerate solver types version-agnostically: 5.6+ yields native
+	// FIKRigSolverBase-derived UScriptStructs; 5.5 yields non-abstract
+	// UIKRigSolver-derived UClasses. Both come back as UStruct* so the
+	// name/identity resolution below is unchanged across engines.
+	TArray<UStruct*> SolverTypes;
+	MonolithIKRig::EnumerateSolverTypes(SolverTypes);
+
+	UStruct* Exact = nullptr;
+	TArray<UStruct*> SubstringMatches;
 	TArray<FString> Available;
-	for (TObjectIterator<UStruct> It; It; ++It)
+	for (UStruct* S : SolverTypes)
 	{
-		UScriptStruct* S = Cast<UScriptStruct>(*It);
-		if (!S || !S->IsNative() || !S->IsChildOf(FIKRigSolverBase::StaticStruct())) continue;
-		if (S == FIKRigSolverBase::StaticStruct()) continue;          // skip base struct
 		const FString Name = S->GetName();
 		Available.Add(Name);
 		// exact match on Struct->GetName(); also accept the leading-'F' C++ spelling.
@@ -5663,7 +5717,7 @@ FMonolithActionResult FMonolithAnimationActions::HandleAddIKSolver(const TShared
 		}
 	}
 
-	UScriptStruct* Resolved = Exact;
+	UStruct* Resolved = Exact;
 	if (!Resolved)
 	{
 		// Last-resort substring: fire ONLY when exactly one struct contains the term.
@@ -5674,7 +5728,7 @@ FMonolithActionResult FMonolithAnimationActions::HandleAddIKSolver(const TShared
 		else if (SubstringMatches.Num() > 1)
 		{
 			TArray<FString> Names;
-			for (UScriptStruct* S : SubstringMatches) Names.Add(S->GetName());
+			for (UStruct* S : SubstringMatches) Names.Add(S->GetName());
 			return FMonolithActionResult::Error(FString::Printf(
 				TEXT("Solver type '%s' is ambiguous — matches %d solvers: %s. Use the exact struct name."),
 				*SolverType, SubstringMatches.Num(), *FString::Join(Names, TEXT(", "))));
@@ -5686,7 +5740,7 @@ FMonolithActionResult FMonolithAnimationActions::HandleAddIKSolver(const TShared
 			TEXT("Solver type '%s' not found. Available: %s"), *SolverType, *FString::Join(Available, TEXT(", "))));
 	}
 
-	const int32 SolverIdx = C->AddSolver(Resolved);   // UScriptStruct* overload — IKRigController.h:151
+	const int32 SolverIdx = MonolithIKRig::AddSolver(C, Resolved);
 	if (SolverIdx < 0)
 	{
 		return FMonolithActionResult::Error(FString::Printf(
@@ -5702,7 +5756,7 @@ FMonolithActionResult FMonolithAnimationActions::HandleAddIKSolver(const TShared
 	bool bStartBoneSet = false;
 	if (Params->TryGetStringField(TEXT("root_bone"), RootBone) && !RootBone.IsEmpty())
 	{
-		bStartBoneSet = C->SetStartBone(FName(*RootBone), SolverIdx);
+		bStartBoneSet = MonolithIKRig::SetSolverStartBone(C, FName(*RootBone), SolverIdx);
 	}
 
 	// Optional goals array
@@ -5952,6 +6006,7 @@ FMonolithActionResult FMonolithAnimationActions::HandleGetRetargeterInfo(const T
 	{
 		TSharedPtr<FJsonObject> OpObj = MakeShared<FJsonObject>();
 		OpObj->SetNumberField(TEXT("index"), OpIdx);
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 		OpObj->SetStringField(TEXT("name"), C->GetOpName(OpIdx).ToString());
 		OpObj->SetBoolField(TEXT("enabled"), C->GetRetargetOpEnabled(OpIdx));
 
@@ -5974,6 +6029,20 @@ FMonolithActionResult FMonolithAnimationActions::HandleGetRetargeterInfo(const T
 		{
 			OpObj->SetStringField(TEXT("type"), TEXT("Unknown"));
 		}
+#else
+		if (URetargetOpBase* Op = C->GetRetargetOpAtIndex(OpIdx))
+		{
+			OpObj->SetStringField(TEXT("name"), Op->GetName());
+			OpObj->SetBoolField(TEXT("enabled"), C->GetRetargetOpEnabled(OpIdx));
+			OpObj->SetStringField(TEXT("type"), Op->GetClass()->GetName());
+		}
+		else
+		{
+			OpObj->SetStringField(TEXT("name"), FString::Printf(TEXT("Op_%d"), OpIdx));
+			OpObj->SetBoolField(TEXT("enabled"), C->GetRetargetOpEnabled(OpIdx));
+			OpObj->SetStringField(TEXT("type"), TEXT("Unknown"));
+		}
+#endif
 		OpsArr.Add(MakeShared<FJsonValueObject>(OpObj));
 	}
 	Root->SetArrayField(TEXT("ops"), OpsArr);
@@ -6216,6 +6285,20 @@ static UEdGraphPin* FindVariableGetOutputPin(UK2Node_VariableGet* VarGetNode, co
 	return nullptr;
 }
 
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
+#define MONOLITH_SPAWN_NODE_LOCATION(X, Y) FVector2f(static_cast<float>(X), static_cast<float>(Y))
+static inline UEdGraphPin* MonolithGetEntryOutputPin(UAnimStateEntryNode* EntryNode)
+{
+	return EntryNode ? EntryNode->GetOutputPin() : nullptr;
+}
+#else
+#define MONOLITH_SPAWN_NODE_LOCATION(X, Y) FVector2D(static_cast<double>(X), static_cast<double>(Y))
+static inline UEdGraphPin* MonolithGetEntryOutputPin(UAnimStateEntryNode* EntryNode)
+{
+	return (EntryNode && EntryNode->Pins.Num() > 0) ? EntryNode->Pins[0] : nullptr;
+}
+#endif
+
 // Helper: find a state node by exact name within a state machine graph
 static UAnimStateNode* FindStateNodeByName(UAnimationStateMachineGraph* SMGraph, const FString& StateName)
 {
@@ -6265,7 +6348,7 @@ FMonolithActionResult FMonolithAnimationActions::HandleAddStateToMachine(const T
 	UAnimStateNode* NewNode = FEdGraphSchemaAction_NewStateNode::SpawnNodeFromTemplate<UAnimStateNode>(
 		SMGraph,
 		NewObject<UAnimStateNode>(SMGraph),
-		FVector2f(static_cast<float>(PosX), static_cast<float>(PosY)),
+		MONOLITH_SPAWN_NODE_LOCATION(PosX, PosY),
 		/*bSelectNewNode=*/false);
 
 	if (!NewNode)
@@ -6357,7 +6440,7 @@ FMonolithActionResult FMonolithAnimationActions::HandleAddConduit(const TSharedP
 	UAnimStateConduitNode* NewNode = FEdGraphSchemaAction_NewStateNode::SpawnNodeFromTemplate<UAnimStateConduitNode>(
 		SMGraph,
 		NewObject<UAnimStateConduitNode>(SMGraph),
-		FVector2f(static_cast<float>(PosX), static_cast<float>(PosY)),
+		MONOLITH_SPAWN_NODE_LOCATION(PosX, PosY),
 		/*bSelectNewNode=*/false);
 
 	if (!NewNode)
@@ -6477,7 +6560,7 @@ static UAnimStateEntryNode* FindEntryNode(UAnimationStateMachineGraph* SMGraph)
 static UAnimStateNodeBase* GetEntryTargetState(UAnimStateEntryNode* EntryNode)
 {
 	if (!EntryNode) return nullptr;
-	UEdGraphPin* EntryOut = EntryNode->GetOutputPin();
+	UEdGraphPin* EntryOut = MonolithGetEntryOutputPin(EntryNode);
 	if (!EntryOut) return nullptr;
 	for (UEdGraphPin* Linked : EntryOut->LinkedTo)
 	{
@@ -6650,7 +6733,7 @@ FMonolithActionResult FMonolithAnimationActions::HandleSetAnimEntryState(const T
 		return FMonolithActionResult::Success(Root);
 	}
 
-	UEdGraphPin* EntryOut = EntryNode->GetOutputPin();
+	UEdGraphPin* EntryOut = MonolithGetEntryOutputPin(EntryNode);
 	if (!EntryOut) return FMonolithActionResult::Error(TEXT("Entry node has no output pin"));
 	UEdGraphPin* StateIn = TargetState->GetInputPin();
 	if (!StateIn) return FMonolithActionResult::Error(FString::Printf(TEXT("Target state '%s' has no input pin"), *StateName));
@@ -8042,7 +8125,7 @@ static UAnimGraphNode_StateMachine* SpawnStateMachineNode(UEdGraph* AnimGraph, c
 	UAnimGraphNode_StateMachine* SMNode = FEdGraphSchemaAction_NewStateNode::SpawnNodeFromTemplate<UAnimGraphNode_StateMachine>(
 		AnimGraph,
 		NewObject<UAnimGraphNode_StateMachine>(AnimGraph),
-		FVector2f(static_cast<float>(PosX), static_cast<float>(PosY)),
+		MONOLITH_SPAWN_NODE_LOCATION(PosX, PosY),
 		/*bSelectNewNode=*/false);
 
 	if (!SMNode || !SMNode->EditorStateMachineGraph)
@@ -8150,7 +8233,7 @@ static UAnimStateNode* BuilderAddState(UAnimationStateMachineGraph* SMGraph, con
 	UAnimStateNode* NewNode = FEdGraphSchemaAction_NewStateNode::SpawnNodeFromTemplate<UAnimStateNode>(
 		SMGraph,
 		NewObject<UAnimStateNode>(SMGraph),
-		FVector2f(0.0f, 0.0f),
+		MONOLITH_SPAWN_NODE_LOCATION(0.0f, 0.0f),
 		/*bSelectNewNode=*/false);
 	if (!NewNode || !NewNode->BoundGraph) return nullptr;
 
@@ -8312,7 +8395,7 @@ FMonolithActionResult FMonolithAnimationActions::HandleBuildStateMachine(const T
 		}
 		if (EntryTarget && EntryNode)
 		{
-			UEdGraphPin* EntryOut = EntryNode->GetOutputPin();
+			UEdGraphPin* EntryOut = MonolithGetEntryOutputPin(EntryNode);
 			UEdGraphPin* StateIn  = EntryTarget->GetInputPin();
 			const UAnimationStateMachineSchema* Schema = Cast<UAnimationStateMachineSchema>(SMGraph->GetSchema());
 			if (EntryOut && StateIn && Schema)
@@ -11049,12 +11132,16 @@ static int32 SeedRetargeterDefaultOps(UIKRetargeterController* C, EAutoMapChainT
 	// Add the default op set (Pelvis Motion, FK Chains, Run IK Rig, IK Chains,
 	// Root Motion, Curve Remap) if not already present, and run each op's initial
 	// setup so chain mappings are reinitialized against the assigned rigs.
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 	C->AddDefaultOps();
 
 	// Auto-map the source->target retarget chains on every op that has a chain
 	// mapping (FK/IK chains ops). Without a chain mapping there is nothing for
 	// RunRetarget to transfer. bForceRemap=true so a re-seed re-maps cleanly.
 	C->AutoMapChains(AutoMapType, /*bForceRemap=*/true, /*InOpName=*/NAME_None);
+#else
+	C->AutoMapChains(AutoMapType, /*bForceRemap=*/true);
+#endif
 
 	return C->GetNumRetargetOps();
 }
@@ -11464,8 +11551,13 @@ FMonolithActionResult FMonolithAnimationActions::HandleCopyBonePoseBetweenSequen
 		// uses the raw track if present and falls back to the skeleton's ref pose
 		// if the bone has no track — which is exactly what we want.
 		FTransform BoneXform = FTransform::Identity;
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 		SourceSeq->GetBoneTransform(BoneXform, FSkeletonPoseBoneIndex(SourceBoneIdx),
 		                            FAnimExtractContext(SourceTime), /*bUseRawData=*/true);
+#else
+		SourceSeq->GetBoneTransform(BoneXform, FSkeletonPoseBoneIndex(SourceBoneIdx),
+		                            SourceTime, /*bUseRawData=*/true);
+#endif
 
 		// Build per-frame arrays for dest. For a static pose, all frames share
 		// the same value; otherwise only frame 0 is set.

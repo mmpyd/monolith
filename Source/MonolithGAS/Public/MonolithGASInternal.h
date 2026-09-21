@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Runtime/Launch/Resources/Version.h"
 #include "Engine/Blueprint.h"
 #include "MonolithToolRegistry.h"
 #include "Dom/JsonObject.h"
@@ -138,5 +139,23 @@ namespace MonolithGAS
 				*AbilityClass->GetName());
 		}
 		return nullptr;
+	}
+
+	inline UClass* GetLatentAbilityCallClass()
+	{
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
+		return UK2Node_LatentAbilityCall::StaticClass();
+#else
+		static UClass* CachedClass = nullptr;
+		if (!CachedClass)
+		{
+			CachedClass = FindObject<UClass>(nullptr, TEXT("/Script/GameplayAbilitiesEditor.K2Node_LatentAbilityCall"));
+			if (!CachedClass)
+			{
+				CachedClass = LoadClass<UObject>(nullptr, TEXT("/Script/GameplayAbilitiesEditor.K2Node_LatentAbilityCall"));
+			}
+		}
+		return CachedClass;
+#endif
 	}
 }

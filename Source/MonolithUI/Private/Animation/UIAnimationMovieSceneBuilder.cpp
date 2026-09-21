@@ -1,5 +1,6 @@
 // Copyright tumourlove. All Rights Reserved.
 #include "Animation/UIAnimationMovieSceneBuilder.h"
+#include "MonolithUICommon.h"  // MonolithUI::RemoveWidgetVarEntry (5.5 widget-var gate)
 #include "UObject/Package.h"
 
 #include "Spec/UISpec.h"
@@ -49,7 +50,7 @@ namespace MonolithUI::AnimationBuilderInternal
         }
 
         WBP->Animations.Remove(Existing);
-        WBP->WidgetVariableNameToGuidMap.Remove(Existing->GetFName());
+        MonolithUI::RemoveWidgetVarEntry(WBP, Existing->GetFName());
 
         // Rename out so a same-name FindOrCreate doesn't trip over a stale UObject.
         // REN_ForceNoResetLoaders is omitted: Rename stopped calling ResetLoaders

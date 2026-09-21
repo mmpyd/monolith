@@ -3,6 +3,7 @@
 
 // Monolith registry
 #include "MonolithToolRegistry.h"
+#include "MonolithUICommon.h"  // MonolithUI::RegisterWidgetVarWithDeterministicGuid (5.5 widget-var gate)
 
 // JSON
 #include "Dom/JsonObject.h"
@@ -104,10 +105,9 @@ namespace MonolithUI::AnimationInternal
 
         // Register in WidgetVariableNameToGuidMap so the WBP compiler's validation pass
         // (WidgetBlueprintCompiler.cpp:805) finds the entry. Use deterministic GUID
-        // matching the compiler's own pattern.
-        WBP->WidgetVariableNameToGuidMap.Add(
-            NewAnim->GetFName(),
-            FGuid::NewDeterministicGuid(NewAnim->GetPathName()));
+        // matching the compiler's own pattern. (5.5: no-op — see MonolithUICommon.h.)
+        MonolithUI::RegisterWidgetVarWithDeterministicGuid(
+            WBP, NewAnim->GetFName(), NewAnim->GetPathName());
 
         return NewAnim;
 #else

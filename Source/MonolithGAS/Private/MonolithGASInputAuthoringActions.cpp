@@ -143,7 +143,9 @@ namespace MonolithInputAuthoring
 			}
 		}
 
-		return Cast<UClass>(StaticFindFirstObject(UClass::StaticClass(), Spec,
+		// UE 5.5 StaticFindFirstObject takes const TCHAR* (no FString/FStringView overload);
+		// *Spec is valid on all engine versions.
+		return Cast<UClass>(StaticFindFirstObject(UClass::StaticClass(), *Spec,
 			EFindFirstObjectOptions::NativeFirst));
 	}
 

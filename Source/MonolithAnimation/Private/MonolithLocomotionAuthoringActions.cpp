@@ -1,6 +1,7 @@
 #include "MonolithLocomotionAuthoringActions.h"
 #include "MonolithAssetUtils.h"
 #include "MonolithParamSchema.h"
+#include "Runtime/Launch/Resources/Version.h" // ENGINE_MAJOR/MINOR_VERSION — ExtractRootMotionFromRange + AnimationModifier API gates
 
 #include "Animation/AnimSequence.h"                 // UAnimSequence, HasRootMotion, ExtractRootMotionFromRange, FAnimExtractContext
 #include "AnimationModifier.h"                       // UAnimationModifier::ApplyToAnimationSequence
@@ -210,7 +211,12 @@ FMonolithActionResult FMonolithLocomotionAuthoringActions::HandleGetRootMotionSp
 
 	// Total translation over the whole clip => average speed. Non-deprecated 3-arg double overload
 	// (AnimSequence.h:428): ExtractRootMotionFromRange(double Start, double End, const FAnimExtractContext&).
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 	const FVector TotalDelta = Seq->ExtractRootMotionFromRange(0.0, static_cast<double>(PlayLength), FAnimExtractContext()).GetTranslation();
+#else
+	// UE 5.5: ExtractRootMotionFromRange is the 2-arg (float Start, float End) overload.
+	const FVector TotalDelta = Seq->ExtractRootMotionFromRange(0.0f, static_cast<float>(PlayLength)).GetTranslation();
+#endif
 	const double TotalDistance = AxisMagnitudeByIndex(TotalDelta, 6 /* XYZ — full planar+vertical for the global read */);
 	const double AverageSpeed = TotalDistance / static_cast<double>(PlayLength);
 
@@ -248,7 +254,12 @@ FMonolithActionResult FMonolithLocomotionAuthoringActions::HandleGetRootMotionSp
 			const double Span = Time - PrevTime;
 			if (Span <= KINDA_SMALL_NUMBER) { PrevTime = Time; continue; }
 
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 			const FVector StepDelta = Seq->ExtractRootMotionFromRange(PrevTime, Time, FAnimExtractContext()).GetTranslation();
+#else
+			// UE 5.5: 2-arg (float Start, float End) overload.
+			const FVector StepDelta = Seq->ExtractRootMotionFromRange(static_cast<float>(PrevTime), static_cast<float>(Time)).GetTranslation();
+#endif
 			const double StepDistance = AxisMagnitudeByIndex(StepDelta, 6 /* XYZ */);
 			const double StepSpeed = StepDistance / Span;
 			PeakSpeed = FMath::Max(PeakSpeed, StepSpeed);
@@ -355,6 +366,7 @@ FMonolithActionResult FMonolithLocomotionAuthoringActions::HandleBakeDistanceCur
 	// AddAnimationModifierOfClass retrieves-or-creates the UAnimationModifiersAssetUserData, instantiates
 	// the modifier with class defaults, and adds it to AnimationModifierInstances. It does NOT auto-apply,
 	// so we fetch the freshly-added instance, set its props reflectively, then apply explicitly. ---
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 	if (!UAnimationModifiersAssetUserData::AddAnimationModifierOfClass(Seq, ModifierClass))
 	{
 		GEditor->EndTransaction();
@@ -367,6 +379,51 @@ FMonolithActionResult FMonolithLocomotionAuthoringActions::HandleBakeDistanceCur
 		GEditor->EndTransaction();
 		return FMonolithActionResult::Error(TEXT("AnimationModifiersAssetUserData missing after AddAnimationModifierOfClass"));
 	}
+#else
+	// UE 5.5 has no static AddAnimationModifierOfClass, and both the instance-based
+	// AddAnimationModifier() and FAnimationModifierHelpers are non-public. Reproduce
+	// the same effect through public surface: retrieve-or-create the AssetUserData on
+	// the sequence, instantiate the modifier under it, and append to the reflected
+	// AnimationModifierInstances array (a UPROPERTY the editor UI mutates the same way).
+	UAnimationModifiersAssetUserData* UserData = Seq->GetAssetUserData<UAnimationModifiersAssetUserData>();
+	if (!UserData)
+	{
+		UserData = NewObject<UAnimationModifiersAssetUserData>(Seq, UAnimationModifiersAssetUserData::StaticClass(), NAME_None, RF_Transactional);
+		Seq->AddAssetUserData(UserData);
+	}
+	UserData->Modify();
+
+	UAnimationModifier* NewInstance = NewObject<UAnimationModifier>(UserData, ModifierClass, NAME_None, RF_Transactional);
+	if (!NewInstance)
+	{
+		GEditor->EndTransaction();
+		return FMonolithActionResult::Error(TEXT("Failed to instantiate DistanceCurveModifier for the AnimationModifiers stack"));
+	}
+	// Append to the protected UPROPERTY() TArray<UAnimationModifier*> AnimationModifierInstances
+	// reflectively (the 5.5 member-add API is friend-only). This mirrors what the editor's
+	// AnimationModifiers tab does when the user adds a modifier.
+	if (FArrayProperty* InstancesProp = FindFProperty<FArrayProperty>(
+			UAnimationModifiersAssetUserData::StaticClass(), TEXT("AnimationModifierInstances")))
+	{
+		FScriptArrayHelper Helper(InstancesProp, InstancesProp->ContainerPtrToValuePtr<void>(UserData));
+		const int32 NewIdx = Helper.AddValue();
+		FObjectProperty* Inner = CastField<FObjectProperty>(InstancesProp->Inner);
+		if (Inner)
+		{
+			Inner->SetObjectPropertyValue(Helper.GetRawPtr(NewIdx), NewInstance);
+		}
+		else
+		{
+			GEditor->EndTransaction();
+			return FMonolithActionResult::Error(TEXT("AnimationModifierInstances inner property is not an object property (5.5 struct shape changed)"));
+		}
+	}
+	else
+	{
+		GEditor->EndTransaction();
+		return FMonolithActionResult::Error(TEXT("Could not resolve AnimationModifierInstances on UAnimationModifiersAssetUserData (5.5)"));
+	}
+#endif
 
 	const TArray<UAnimationModifier*>& Instances = UserData->GetAnimationModifierInstances();
 	if (Instances.Num() == 0 || !Instances.Last())

@@ -4,6 +4,7 @@
 // 3.D.3 force_focus [RUNTIME]
 // 3.D.4 get_focus_path [RUNTIME]
 // 3.D.5 request_refresh_focus [RUNTIME]
+#include "Runtime/Launch/Resources/Version.h"  // ENGINE_MAJOR/MINOR_VERSION for the 5.5 RequestRefreshFocus gate
 #include "MonolithCommonUIHelpers.h"
 
 #if WITH_COMMONUI
@@ -883,7 +884,13 @@ namespace MonolithCommonUINavigation
 		if (!Found)
 			return FMonolithActionResult::Error(FString::Printf(TEXT("Activatable widget '%s' not found in PIE"), *WidgetName));
 
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 		Found->RequestRefreshFocus();
+#else
+		// UE 5.5: RequestRefreshFocus() is protected. Achieve the same effect via
+		// the public delegate accessor, which broadcasts the same refresh request.
+		Found->OnRequestRefreshFocus().Broadcast();
+#endif
 
 		TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
 		Result->SetStringField(TEXT("widget_name"), WidgetName);

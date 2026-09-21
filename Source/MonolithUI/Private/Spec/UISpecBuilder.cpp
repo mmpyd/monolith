@@ -1193,7 +1193,7 @@ FUISpecBuilderResult FUISpecBuilder::Build(const FUISpecBuilderInputs& Inputs)
                     REN_DoNotDirty | REN_DontCreateRedirectors);
             }
             WBP->WidgetTree->RootWidget = nullptr;
-            WBP->WidgetVariableNameToGuidMap.Empty();
+            MonolithUI::ClearWidgetVarMap(WBP);
         }
     }
 

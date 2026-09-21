@@ -115,5 +115,19 @@ public class MonolithAnimation : ModuleRules
 		{
 			PublicDefinitions.Add("WITH_CHOOSER=0");
 		}
+
+		// --- UE 5.5: PoseSearch feature-channel concrete headers ---
+		// The per-channel headers (PoseSearchFeatureChannel_Position/Velocity/…) that
+		// MonolithPoseSearchActions.cpp needs for concrete member access were relocated
+		// to the PoseSearch module's PUBLIC folder in 5.6+, but on 5.5 they live under
+		// Runtime/Private/ (bare-named, no "PoseSearch/" prefix). The types are still
+		// POSESEARCH_API-exported there (so linkage is fine); only the include path is
+		// private. Widen PrivateIncludePaths into that folder on 5.5 only — this adds NO
+		// new module dependency (PoseSearch is already a hard PrivateDependency above).
+		if (Target.Version.MajorVersion == 5 && Target.Version.MinorVersion < 6)
+		{
+			PrivateIncludePaths.Add(System.IO.Path.Combine(
+				EngineDirectory, "Plugins/Animation/PoseSearch/Source/Runtime/Private"));
+		}
 	}
 }

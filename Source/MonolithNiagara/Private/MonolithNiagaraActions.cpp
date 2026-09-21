@@ -5,6 +5,8 @@
 #include "MonolithPackagePathValidator.h"
 #include "MonolithParamSchema.h"
 
+#include "Runtime/Launch/Resources/Version.h"
+
 #include "NiagaraSystem.h"
 #include "NiagaraEmitter.h"
 #include "NiagaraEmitterHandle.h"
@@ -1254,8 +1256,72 @@ namespace MonolithNiagaraHelpers
 			}
 		}
 	}
-
 } // namespace MonolithNiagaraHelpers
+
+#if !(ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6)
+// In UE 5.5, GetStackFunctionInputs and GetStackFunctionStaticSwitchPins
+// lack NIAGARAEDITOR_API export. Provide definitions inside namespace FNiagaraStackGraphUtilities:
+namespace FNiagaraStackGraphUtilities
+{
+	void GetStackFunctionInputs(
+		const UNiagaraNodeFunctionCall& FunctionCallNode,
+		TArray<FNiagaraVariable>& OutInputVariables,
+		FCompileConstantResolver ConstantResolver,
+		ENiagaraGetStackFunctionInputPinsOptions Options,
+		bool bIgnoreDisabled)
+	{
+		MonolithNiagaraHelpers::GetStackFunctionInputs(FunctionCallNode, OutInputVariables);
+		if (OutInputVariables.Num() == 0)
+		{
+			if (const UNiagaraGraph* CalledGraph = FunctionCallNode.GetCalledGraph())
+			{
+				for (const UEdGraphNode* Node : CalledGraph->Nodes)
+				{
+					if (const UNiagaraNodeInput* InNode = Cast<const UNiagaraNodeInput>(Node))
+					{
+						if (InNode->Usage == ENiagaraInputNodeUsage::Parameter)
+						{
+							OutInputVariables.Add(InNode->Input);
+						}
+					}
+				}
+			}
+		}
+	}
+
+	void GetStackFunctionStaticSwitchPins(
+		const UNiagaraNodeFunctionCall& FunctionCallNode,
+		TArray<UEdGraphPin*>& OutInputPins,
+		TSet<UEdGraphPin*>& OutHiddenPins,
+		FCompileConstantResolver& ConstantResolver)
+	{
+		const UEdGraphSchema_Niagara* Schema = Cast<UEdGraphSchema_Niagara>(FunctionCallNode.GetSchema());
+		UNiagaraGraph* FunctionCallGraph = FunctionCallNode.GetCalledGraph();
+		if (!FunctionCallGraph || !Schema)
+		{
+			return;
+		}
+
+		TArray<FNiagaraVariable> SwitchInputs = FunctionCallGraph->FindStaticSwitchInputs();
+		for (const FNiagaraVariable& SwitchInput : SwitchInputs)
+		{
+			FEdGraphPinType PinType = Schema->TypeDefinitionToPinType(SwitchInput.GetType());
+			for (UEdGraphPin* Pin : FunctionCallNode.Pins)
+			{
+				if (Pin->Direction != EEdGraphPinDirection::EGPD_Input)
+				{
+					continue;
+				}
+				if (Pin->PinName == SwitchInput.GetName() && Pin->PinType == PinType)
+				{
+					OutInputPins.Add(Pin);
+					break;
+				}
+			}
+		}
+	}
+}
+#endif
 
 // Helper: wrap a string result in a FJsonObject for FMonolithActionResult::Success
 static FMonolithActionResult NA_SuccessStr(const FString& Msg)
@@ -5328,7 +5394,22 @@ FMonolithActionResult FMonolithNiagaraActions::HandleSetModuleInputBinding(const
 	UNiagaraGraph* Graph = MN->GetNiagaraGraph();
 	TSet<FNiagaraVariableBase> KnownParams;
 	if (Graph) MonolithNiagaraHelpers::GetParametersForContext(Graph, *System, KnownParams);
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 	FNiagaraStackGraphUtilities::SetLinkedParameterValueForFunctionInput(OP, LinkedParam, KnownParams);
+#else
+	// UE 5.5: the setter is SetLinkedValueHandleForFunctionInput, taking an
+	// FNiagaraParameterHandle (built from the binding path) and a TSet<FNiagaraVariable>
+	// (not TSet<FNiagaraVariableBase>). FNiagaraVariable derives from FNiagaraVariableBase,
+	// so widen each known param back to the full type for the call.
+	TSet<FNiagaraVariable> KnownParamsFull;
+	KnownParamsFull.Reserve(KnownParams.Num());
+	for (const FNiagaraVariableBase& P : KnownParams)
+	{
+		KnownParamsFull.Add(FNiagaraVariable(P));
+	}
+	FNiagaraStackGraphUtilities::SetLinkedValueHandleForFunctionInput(
+		OP, FNiagaraParameterHandle(FName(*BindingPath)), KnownParamsFull);
+#endif
 
 	GEditor->EndTransaction();
 	System->RequestCompile(false);

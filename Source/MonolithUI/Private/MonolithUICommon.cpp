@@ -1,6 +1,7 @@
 // Copyright tumourlove. All Rights Reserved.
 #include "MonolithUICommon.h"
 
+#include "Runtime/Launch/Resources/Version.h"  // ENGINE_MAJOR/MINOR_VERSION for the 5.5 widget-var gate
 #include "MonolithToolRegistry.h"
 
 // UMG widget classes — required for the WidgetClassFromName curated table.
@@ -252,10 +253,16 @@ namespace MonolithUI
             return;
         }
 
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
         if (!WBP->WidgetVariableNameToGuidMap.Contains(VariableName))
         {
             WBP->OnVariableAdded(VariableName);
         }
+#else
+        // UE 5.5: no WidgetVariableNameToGuidMap; the WBP compiler does not need it.
+        (void)WBP;
+        (void)VariableName;
+#endif
     }
 
     void RegisterCreatedWidget(UWidgetBlueprint* WBP, UWidget* Widget)
@@ -274,6 +281,7 @@ namespace MonolithUI
             return;
         }
 
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
         TSet<FName> LiveVariableNames;
 
         WBP->ForEachSourceWidget([WBP, &LiveVariableNames](UWidget* Widget)
@@ -309,6 +317,90 @@ namespace MonolithUI
         {
             WBP->OnVariableRemoved(RemovedVariableName);
         }
+#else
+        // UE 5.5: no WidgetVariableNameToGuidMap to reconcile; the WBP compiler
+        // tracks widget variables without it, so this is a no-op.
+#endif
+    }
+
+    // -------------------------------------------------------------------------
+    // Widget-variable GUID map compat helpers (see MonolithUICommon.h).
+    // The version gate lives here so call sites stay engine-version agnostic.
+    // -------------------------------------------------------------------------
+
+    void RegisterWidgetVar(UWidgetBlueprint* WBP, FName Name)
+    {
+        if (!WBP || Name.IsNone())
+        {
+            return;
+        }
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
+        if (!WBP->WidgetVariableNameToGuidMap.Contains(Name))
+        {
+            WBP->OnVariableAdded(Name);
+        }
+#endif
+    }
+
+    void RegisterWidgetVarWithDeterministicGuid(
+        UWidgetBlueprint* WBP, FName Name, const FString& PathName)
+    {
+        if (!WBP || Name.IsNone())
+        {
+            return;
+        }
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
+        WBP->WidgetVariableNameToGuidMap.Add(Name, FGuid::NewDeterministicGuid(PathName));
+#else
+        (void)PathName;
+#endif
+    }
+
+    void UnregisterWidgetVar(UWidgetBlueprint* WBP, FName Name)
+    {
+        if (!WBP)
+        {
+            return;
+        }
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
+        if (WBP->WidgetVariableNameToGuidMap.Contains(Name))
+        {
+            WBP->OnVariableRemoved(Name);
+        }
+#endif
+    }
+
+    void UnregisterWidgetVarUnconditional(UWidgetBlueprint* WBP, FName Name)
+    {
+        if (!WBP)
+        {
+            return;
+        }
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
+        WBP->OnVariableRemoved(Name);
+#endif
+    }
+
+    void RemoveWidgetVarEntry(UWidgetBlueprint* WBP, FName Name)
+    {
+        if (!WBP)
+        {
+            return;
+        }
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
+        WBP->WidgetVariableNameToGuidMap.Remove(Name);
+#endif
+    }
+
+    void ClearWidgetVarMap(UWidgetBlueprint* WBP)
+    {
+        if (!WBP)
+        {
+            return;
+        }
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
+        WBP->WidgetVariableNameToGuidMap.Empty();
+#endif
     }
 
     // -------------------------------------------------------------------------

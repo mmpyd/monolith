@@ -23,8 +23,14 @@
 FString FGASIndexer::JsonToString(TSharedPtr<FJsonObject> JsonObj)
 {
 	FString Out;
+	if (!JsonObj.IsValid())
+	{
+		return Out;
+	}
 	auto Writer = TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Out);
-	FJsonSerializer::Serialize(JsonObj, *Writer, true);
+	// UE 5.5 FJsonSerializer::Serialize has no TSharedPtr<FJsonObject> overload (only
+	// TSharedRef); ToSharedRef() works on all engine versions.
+	FJsonSerializer::Serialize(JsonObj.ToSharedRef(), *Writer, true);
 	return Out;
 }
 

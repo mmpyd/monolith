@@ -145,6 +145,66 @@ namespace MonolithUI
     MONOLITHUI_API void ReconcileWidgetVariableGuids(UWidgetBlueprint* WBP);
 
     // -------------------------------------------------------------------------
+    // Widget-variable GUID map compat (UE 5.5 vs 5.6+)
+    // -------------------------------------------------------------------------
+    //
+    // UE 5.7+ added `UWidgetBlueprint::WidgetVariableNameToGuidMap` plus the
+    // `OnVariableAdded` / `OnVariableRemoved` bookkeeping hooks to satisfy the
+    // WBP compiler's variable-GUID validation pass. UE 5.5 has none of these:
+    // its WBP compiler does not require the map and the widgets/animations work
+    // without it. These helpers centralise the version gate so every call site
+    // routes through one place. On 5.6+ each does the real map operation; on 5.5
+    // each is a no-op. The definitions (and the gate) live in MonolithUICommon.cpp
+    // where `WidgetBlueprint.h` is already included, so this exported header can
+    // keep forward-declaring `UWidgetBlueprint` for sibling-plugin consumers.
+
+    /**
+     * Register `Name` on the WBP as a widget variable if not already present.
+     * 5.6+: `if (!WidgetVariableNameToGuidMap.Contains(Name)) OnVariableAdded(Name);`
+     * 5.5: no-op.
+     */
+    MONOLITHUI_API void RegisterWidgetVar(UWidgetBlueprint* WBP, FName Name);
+
+    /**
+     * Register `Name` with a deterministic GUID derived from `PathName` (matches
+     * the WBP compiler's own deterministic-GUID pattern for animations).
+     * 5.6+: `WidgetVariableNameToGuidMap.Add(Name, FGuid::NewDeterministicGuid(PathName));`
+     * 5.5: no-op.
+     */
+    MONOLITHUI_API void RegisterWidgetVarWithDeterministicGuid(
+        UWidgetBlueprint* WBP, FName Name, const FString& PathName);
+
+    /**
+     * Unregister `Name` if present.
+     * 5.6+: `if (WidgetVariableNameToGuidMap.Contains(Name)) OnVariableRemoved(Name);`
+     * 5.5: no-op.
+     */
+    MONOLITHUI_API void UnregisterWidgetVar(UWidgetBlueprint* WBP, FName Name);
+
+    /**
+     * Unregister `Name` unconditionally (for call sites that invoke
+     * OnVariableRemoved without a Contains guard).
+     * 5.6+: `OnVariableRemoved(Name);`
+     * 5.5: no-op.
+     */
+    MONOLITHUI_API void UnregisterWidgetVarUnconditional(UWidgetBlueprint* WBP, FName Name);
+
+    /**
+     * Remove `Name` directly from the map without firing OnVariableRemoved (for
+     * sites that manipulate the map entry rather than the editor bookkeeping).
+     * 5.6+: `WidgetVariableNameToGuidMap.Remove(Name);`
+     * 5.5: no-op.
+     */
+    MONOLITHUI_API void RemoveWidgetVarEntry(UWidgetBlueprint* WBP, FName Name);
+
+    /**
+     * Empty the entire variable-GUID map.
+     * 5.6+: `WidgetVariableNameToGuidMap.Empty();`
+     * 5.5: no-op.
+     */
+    MONOLITHUI_API void ClearWidgetVarMap(UWidgetBlueprint* WBP);
+
+    // -------------------------------------------------------------------------
     // Optional EffectSurface provider probe API (R3b / section 5.5 contract)
     // -------------------------------------------------------------------------
     //

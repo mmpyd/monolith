@@ -15,7 +15,9 @@ bool FDataAssetIndexer::IndexAsset(const FAssetData& AssetData, UObject* LoadedA
 
 	FString PropsStr;
 	auto Writer = TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&PropsStr);
-	FJsonSerializer::Serialize(Props, *Writer, true);
+	// UE 5.5 FJsonSerializer::Serialize has no TSharedPtr<FJsonObject> overload (only
+	// TSharedRef); ToSharedRef() works on all engine versions. Props checked non-null above.
+	FJsonSerializer::Serialize(Props.ToSharedRef(), *Writer, true);
 
 	FIndexedNode Node;
 	Node.AssetId = AssetId;

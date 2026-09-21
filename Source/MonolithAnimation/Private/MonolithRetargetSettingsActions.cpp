@@ -12,12 +12,15 @@
 #include "Retargeter/IKRetargeter.h"
 #include "Retargeter/IKRetargetSettings.h"
 #include "Retargeter/IKRetargetOps.h"
+#include "RetargetEditor/IKRetargeterController.h"
+#include "RetargetEditor/IKRetargeterPoseGenerator.h" // ERetargetAutoAlignMethod
+
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 #include "Retargeter/RetargetOps/FKChainsOp.h"
 #include "Retargeter/RetargetOps/IKChainsOp.h"
 #include "Retargeter/RetargetOps/PelvisMotionOp.h"
 #include "Retargeter/RetargetOps/SpeedPlantingOp.h"
-#include "RetargetEditor/IKRetargeterController.h"
-#include "RetargetEditor/IKRetargeterPoseGenerator.h" // ERetargetAutoAlignMethod
+#endif
 
 namespace
 {
@@ -69,6 +72,7 @@ namespace
 		return Side == ERetargetSourceOrTarget::Source ? TEXT("source") : TEXT("target");
 	}
 
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 	/** EFKChainRotationMode has NON-SEQUENTIAL explicit enum values — parse strictly by name. */
 	bool ParseFKRotationMode(const FString& In, EFKChainRotationMode& Out)
 	{
@@ -99,6 +103,63 @@ namespace
 		const UEnum* E = StaticEnum<EFKChainTranslationMode>();
 		return E ? E->GetNameStringByValue(static_cast<int64>(Mode)) : FString::FromInt(static_cast<int32>(Mode));
 	}
+#else
+	bool Parse55RotationMode(const FString& In, ERetargetRotationMode& Out)
+	{
+		if (In.Equals(TEXT("Interpolated"), ESearchCase::IgnoreCase)) { Out = ERetargetRotationMode::Interpolated; return true; }
+		if (In.Equals(TEXT("OneToOne"), ESearchCase::IgnoreCase)) { Out = ERetargetRotationMode::OneToOne; return true; }
+		if (In.Equals(TEXT("OneToOneReversed"), ESearchCase::IgnoreCase)) { Out = ERetargetRotationMode::OneToOneReversed; return true; }
+		if (In.Equals(TEXT("None"), ESearchCase::IgnoreCase)) { Out = ERetargetRotationMode::None; return true; }
+		return false;
+	}
+
+	bool Parse55TranslationMode(const FString& In, ERetargetTranslationMode& Out)
+	{
+		if (In.Equals(TEXT("None"), ESearchCase::IgnoreCase)) { Out = ERetargetTranslationMode::None; return true; }
+		if (In.Equals(TEXT("GloballyScaled"), ESearchCase::IgnoreCase)) { Out = ERetargetTranslationMode::GloballyScaled; return true; }
+		if (In.Equals(TEXT("Absolute"), ESearchCase::IgnoreCase)) { Out = ERetargetTranslationMode::Absolute; return true; }
+		return false;
+	}
+
+	FString RotationMode55ToString(ERetargetRotationMode Mode)
+	{
+		switch (Mode)
+		{
+		case ERetargetRotationMode::Interpolated: return TEXT("Interpolated");
+		case ERetargetRotationMode::OneToOne: return TEXT("OneToOne");
+		case ERetargetRotationMode::OneToOneReversed: return TEXT("OneToOneReversed");
+		case ERetargetRotationMode::None: return TEXT("None");
+		default: return TEXT("None");
+		}
+	}
+
+	FString TranslationMode55ToString(ERetargetTranslationMode Mode)
+	{
+		switch (Mode)
+		{
+		case ERetargetTranslationMode::None: return TEXT("None");
+		case ERetargetTranslationMode::GloballyScaled: return TEXT("GloballyScaled");
+		case ERetargetTranslationMode::Absolute: return TEXT("Absolute");
+		default: return TEXT("None");
+		}
+	}
+
+	bool HasTargetChain55(const UIKRetargeterController* Controller, const FName& ChainName)
+	{
+		if (!Controller)
+		{
+			return false;
+		}
+		for (const URetargetChainSettings* Chain : Controller->GetAllChainSettings())
+		{
+			if (Chain && Chain->TargetChain == ChainName)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+#endif
 
 	bool ParseAutoAlignMethod(const FString& In, ERetargetAutoAlignMethod& Out)
 	{
@@ -195,6 +256,7 @@ UIKRetargetOpControllerBase* FMonolithRetargetSettingsActions::ResolveOpControll
 	int32& OutOpIndex)
 {
 	OutOpIndex = INDEX_NONE;
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 	if (!Controller || !OpType)
 	{
 		return nullptr;
@@ -210,6 +272,10 @@ UIKRetargetOpControllerBase* FMonolithRetargetSettingsActions::ResolveOpControll
 			return Controller->GetOpController(Index);
 		}
 	}
+#else
+	(void)Controller;
+	(void)OpType;
+#endif
 	return nullptr;
 }
 
@@ -300,7 +366,11 @@ FMonolithActionResult FMonolithRetargetSettingsActions::HandleAlignRetargetPose(
 		}
 		else
 		{
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 			Controller->AutoAlignAllBones(Side, Method);
+#else
+			Controller->AutoAlignAllBones(Side);
+#endif
 		}
 
 		if (bSnapToGround)
@@ -503,6 +573,7 @@ FMonolithActionResult FMonolithRetargetSettingsActions::HandleSetRetargetPose(co
 //  T1-R3 — get_retarget_chain_settings
 // ===========================================================================
 
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 FMonolithActionResult FMonolithRetargetSettingsActions::HandleGetRetargetChainSettings(const TSharedPtr<FJsonObject>& Params)
 {
 	const FString AssetPath = Params->GetStringField(TEXT("retargeter_path"));
@@ -995,6 +1066,371 @@ FMonolithActionResult FMonolithRetargetSettingsActions::HandleEnableFootGroundLo
 	return FMonolithActionResult::Success(Root);
 #endif // 5.8 foot-ground-lock gate
 }
+
+#else // !(ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6)
+
+// ===========================================================================
+//  T1-R3 — get_retarget_chain_settings (UE 5.5 path)
+// ===========================================================================
+
+FMonolithActionResult FMonolithRetargetSettingsActions::HandleGetRetargetChainSettings(const TSharedPtr<FJsonObject>& Params)
+{
+	const FString AssetPath = Params->GetStringField(TEXT("retargeter_path"));
+
+	FString Error;
+	UIKRetargeterController* Controller = ResolveRetargeterController(AssetPath, Error);
+	if (!Controller) { return FMonolithActionResult::Error(Error); }
+
+	// Optional filter to a single chain by name.
+	FString ChainFilter;
+	const bool bHasChainFilter = Params->TryGetStringField(TEXT("chain_name"), ChainFilter) && !ChainFilter.IsEmpty();
+
+	TSharedPtr<FJsonObject> Root = MakeShared<FJsonObject>();
+	Root->SetStringField(TEXT("retargeter_path"), AssetPath);
+	if (bHasChainFilter) { Root->SetStringField(TEXT("chain_name"), ChainFilter); }
+
+	TArray<TSharedPtr<FJsonValue>> FKArr;
+	TArray<TSharedPtr<FJsonValue>> IKArr;
+
+	for (const URetargetChainSettings* ChainObj : Controller->GetAllChainSettings())
+	{
+		if (!ChainObj)
+		{
+			continue;
+		}
+
+		const FName TargetChainName = ChainObj->TargetChain;
+		if (bHasChainFilter && !TargetChainName.ToString().Equals(ChainFilter, ESearchCase::IgnoreCase))
+		{
+			continue;
+		}
+
+		const FTargetChainSettings& ChainSettings = ChainObj->Settings;
+
+		// FK Entry
+		TSharedPtr<FJsonObject> FKEntry = MakeShared<FJsonObject>();
+		FKEntry->SetStringField(TEXT("target_chain"), TargetChainName.ToString());
+		FKEntry->SetBoolField(TEXT("enable_fk"), ChainSettings.FK.EnableFK);
+		FKEntry->SetStringField(TEXT("fk_rotation_mode"), RotationMode55ToString(ChainSettings.FK.RotationMode));
+		FKEntry->SetNumberField(TEXT("rotation_alpha"), ChainSettings.FK.RotationAlpha);
+		FKEntry->SetStringField(TEXT("translation_mode"), TranslationMode55ToString(ChainSettings.FK.TranslationMode));
+		FKEntry->SetNumberField(TEXT("translation_alpha"), ChainSettings.FK.TranslationAlpha);
+		FKArr.Add(MakeShared<FJsonValueObject>(FKEntry));
+
+		// IK Entry
+		TSharedPtr<FJsonObject> IKEntry = MakeShared<FJsonObject>();
+		IKEntry->SetStringField(TEXT("target_chain"), TargetChainName.ToString());
+		IKEntry->SetBoolField(TEXT("ik_enabled"), ChainSettings.IK.EnableIK);
+		IKEntry->SetNumberField(TEXT("blend_to_source"), ChainSettings.IK.BlendToSource);
+		IKEntry->SetObjectField(TEXT("static_offset"), VectorToJson(ChainSettings.IK.StaticOffset));
+		IKEntry->SetObjectField(TEXT("static_local_offset"), VectorToJson(ChainSettings.IK.StaticLocalOffset));
+		IKArr.Add(MakeShared<FJsonValueObject>(IKEntry));
+	}
+
+	Root->SetArrayField(TEXT("fk_chains"), FKArr);
+	Root->SetArrayField(TEXT("ik_chains"), IKArr);
+
+	return FMonolithActionResult::Success(Root);
+}
+
+// ===========================================================================
+//  T1-R3 — set_retarget_chain_settings (UE 5.5 path)
+// ===========================================================================
+
+FMonolithActionResult FMonolithRetargetSettingsActions::HandleSetRetargetChainSettings(const TSharedPtr<FJsonObject>& Params)
+{
+	const FString AssetPath = Params->GetStringField(TEXT("retargeter_path"));
+
+	FString ChainName;
+	if (!Params->TryGetStringField(TEXT("chain_name"), ChainName) || ChainName.IsEmpty())
+	{
+		return FMonolithActionResult::Error(TEXT("Missing required 'chain_name' parameter"));
+	}
+
+	FString Error;
+	UIKRetargeterController* Controller = ResolveRetargeterController(AssetPath, Error);
+	if (!Controller) { return FMonolithActionResult::Error(Error); }
+
+	if (!HasTargetChain55(Controller, FName(*ChainName)))
+	{
+		return FMonolithActionResult::Error(FString::Printf(TEXT("Target chain '%s' not found in retargeter"), *ChainName));
+	}
+
+	const FScopedTransaction Transaction(FText::FromString(TEXT("Set Retarget Chain Settings")));
+	Controller->GetAsset()->Modify();
+
+	FTargetChainSettings Settings = Controller->GetRetargetChainSettings(FName(*ChainName));
+	int32 Modifications = 0;
+
+	// FK modifications
+	bool bEnableFK = false;
+	if (Params->TryGetBoolField(TEXT("enable_fk"), bEnableFK))
+	{
+		Settings.FK.EnableFK = bEnableFK;
+		++Modifications;
+	}
+
+	FString FKRotModeStr;
+	if (Params->TryGetStringField(TEXT("fk_rotation_mode"), FKRotModeStr))
+	{
+		ERetargetRotationMode RotMode;
+		if (Parse55RotationMode(FKRotModeStr, RotMode))
+		{
+			Settings.FK.RotationMode = RotMode;
+			++Modifications;
+		}
+		else
+		{
+			return FMonolithActionResult::Error(FString::Printf(TEXT("Invalid fk_rotation_mode '%s' (valid: Interpolated, OneToOne, OneToOneReversed, None)"), *FKRotModeStr));
+		}
+	}
+
+	double RotAlpha = 0.0;
+	if (Params->TryGetNumberField(TEXT("rotation_alpha"), RotAlpha))
+	{
+		Settings.FK.RotationAlpha = static_cast<float>(RotAlpha);
+		++Modifications;
+	}
+
+	FString TransModeStr;
+	if (Params->TryGetStringField(TEXT("translation_mode"), TransModeStr))
+	{
+		ERetargetTranslationMode TransMode;
+		if (Parse55TranslationMode(TransModeStr, TransMode))
+		{
+			Settings.FK.TranslationMode = TransMode;
+			++Modifications;
+		}
+		else
+		{
+			return FMonolithActionResult::Error(FString::Printf(TEXT("Invalid translation_mode '%s' (valid: None, GloballyScaled, Absolute)"), *TransModeStr));
+		}
+	}
+
+	double TransScale = 0.0;
+	if (Params->TryGetNumberField(TEXT("translation_scale"), TransScale) || Params->TryGetNumberField(TEXT("translation_alpha"), TransScale))
+	{
+		Settings.FK.TranslationAlpha = static_cast<float>(TransScale);
+		++Modifications;
+	}
+
+	// IK modifications
+	bool bIKEnabled = false;
+	if (Params->TryGetBoolField(TEXT("ik_enabled"), bIKEnabled))
+	{
+		Settings.IK.EnableIK = bIKEnabled;
+		++Modifications;
+	}
+
+	double BlendToSource = 0.0;
+	if (Params->TryGetNumberField(TEXT("blend_to_source"), BlendToSource))
+	{
+		Settings.IK.BlendToSource = static_cast<float>(BlendToSource);
+		++Modifications;
+	}
+
+	const TSharedPtr<FJsonObject>* StaticOffsetObj = nullptr;
+	FVector StaticOffsetVal;
+	if (Params->TryGetObjectField(TEXT("static_offset"), StaticOffsetObj) && TryReadVector(*StaticOffsetObj, StaticOffsetVal))
+	{
+		Settings.IK.StaticOffset = StaticOffsetVal;
+		++Modifications;
+	}
+	else if (Params->TryGetObjectField(TEXT("pole_vector"), StaticOffsetObj) && TryReadVector(*StaticOffsetObj, StaticOffsetVal))
+	{
+		Settings.IK.StaticOffset = StaticOffsetVal;
+		++Modifications;
+	}
+
+	if (Modifications == 0)
+	{
+		return FMonolithActionResult::Error(TEXT("No recognized FK or IK settings provided to mutate"));
+	}
+
+	Controller->SetRetargetChainSettings(FName(*ChainName), Settings);
+	Controller->GetAsset()->MarkPackageDirty();
+
+	TSharedPtr<FJsonObject> Root = MakeShared<FJsonObject>();
+	Root->SetStringField(TEXT("retargeter_path"), AssetPath);
+	Root->SetStringField(TEXT("chain_name"), ChainName);
+	Root->SetNumberField(TEXT("mutations_applied"), Modifications);
+	return FMonolithActionResult::Success(Root);
+}
+
+// ===========================================================================
+//  T1-R5 — set_retarget_root_settings (UE 5.5 path)
+// ===========================================================================
+
+FMonolithActionResult FMonolithRetargetSettingsActions::HandleSetRetargetRootSettings(const TSharedPtr<FJsonObject>& Params)
+{
+	const FString AssetPath = Params->GetStringField(TEXT("retargeter_path"));
+
+	FString Error;
+	UIKRetargeterController* Controller = ResolveRetargeterController(AssetPath, Error);
+	if (!Controller) { return FMonolithActionResult::Error(Error); }
+
+	const FScopedTransaction Transaction(FText::FromString(TEXT("Set Retarget Root Settings")));
+	Controller->GetAsset()->Modify();
+
+	FTargetRootSettings Settings = Controller->GetRootSettings();
+	int32 Mutations = 0;
+
+	double Val = 0.0;
+	if (Params->TryGetNumberField(TEXT("scale_horizontal"), Val))
+	{
+		Settings.ScaleHorizontal = static_cast<float>(Val);
+		++Mutations;
+	}
+	if (Params->TryGetNumberField(TEXT("scale_vertical"), Val))
+	{
+		Settings.ScaleVertical = static_cast<float>(Val);
+		++Mutations;
+	}
+	if (Params->TryGetNumberField(TEXT("affect_ik_horizontal"), Val))
+	{
+		Settings.AffectIKHorizontal = static_cast<float>(Val);
+		++Mutations;
+	}
+	if (Params->TryGetNumberField(TEXT("affect_ik_vertical"), Val))
+	{
+		Settings.AffectIKVertical = static_cast<float>(Val);
+		++Mutations;
+	}
+	if (Params->TryGetNumberField(TEXT("rotation_alpha"), Val))
+	{
+		Settings.RotationAlpha = static_cast<float>(Val);
+		++Mutations;
+	}
+	if (Params->TryGetNumberField(TEXT("translation_alpha"), Val))
+	{
+		Settings.TranslationAlpha = static_cast<float>(Val);
+		++Mutations;
+	}
+	if (Params->TryGetNumberField(TEXT("blend_to_source_translation"), Val))
+	{
+		Settings.BlendToSource = static_cast<float>(Val);
+		++Mutations;
+	}
+
+	const TSharedPtr<FJsonObject>* TransOffsetObj = nullptr;
+	FVector TransOffset;
+	if (Params->TryGetObjectField(TEXT("translation_offset_global"), TransOffsetObj) && TryReadVector(*TransOffsetObj, TransOffset))
+	{
+		Settings.TranslationOffset = TransOffset;
+		++Mutations;
+	}
+
+	if (Mutations == 0)
+	{
+		return FMonolithActionResult::Error(TEXT("No root settings provided to mutate"));
+	}
+
+	Controller->SetRootSettings(Settings);
+	Controller->GetAsset()->MarkPackageDirty();
+
+	TSharedPtr<FJsonObject> Root = MakeShared<FJsonObject>();
+	Root->SetStringField(TEXT("retargeter_path"), AssetPath);
+	Root->SetNumberField(TEXT("mutations_applied"), Mutations);
+	return FMonolithActionResult::Success(Root);
+}
+
+// ===========================================================================
+//  T1-R5 — enable_foot_ground_lock (UE 5.5 path)
+// ===========================================================================
+
+FMonolithActionResult FMonolithRetargetSettingsActions::HandleEnableFootGroundLock(const TSharedPtr<FJsonObject>& Params)
+{
+	const FString AssetPath = Params->GetStringField(TEXT("retargeter_path"));
+
+	FString Error;
+	UIKRetargeterController* Controller = ResolveRetargeterController(AssetPath, Error);
+	if (!Controller) { return FMonolithActionResult::Error(Error); }
+
+	const TArray<TSharedPtr<FJsonValue>>* ChainsArr = nullptr;
+	if (!Params->TryGetArrayField(TEXT("chains"), ChainsArr) || ChainsArr->Num() == 0)
+	{
+		return FMonolithActionResult::Error(TEXT("Missing required non-empty 'chains' array"));
+	}
+
+	double SpeedThreshold = 15.0;
+	Params->TryGetNumberField(TEXT("speed_threshold"), SpeedThreshold);
+	double Stiffness = 250.0;
+	Params->TryGetNumberField(TEXT("stiffness"), Stiffness);
+	double Damping = 1.0;
+	Params->TryGetNumberField(TEXT("critical_damping"), Damping);
+
+	const FScopedTransaction Transaction(FText::FromString(TEXT("Enable Foot Ground Lock")));
+	Controller->GetAsset()->Modify();
+
+	TArray<FString> ResolvedChains;
+
+	for (const TSharedPtr<FJsonValue>& V : *ChainsArr)
+	{
+		FString TargetChain;
+		FString SpeedCurve;
+		if (V->Type == EJson::String)
+		{
+			TargetChain = V->AsString();
+		}
+		else if (V->Type == EJson::Object)
+		{
+			TSharedPtr<FJsonObject> Obj = V->AsObject();
+			Obj->TryGetStringField(TEXT("target_chain"), TargetChain);
+			Obj->TryGetStringField(TEXT("speed_curve"), SpeedCurve);
+		}
+
+		if (TargetChain.IsEmpty())
+		{
+			continue;
+		}
+
+		if (!HasTargetChain55(Controller, FName(*TargetChain)))
+		{
+			return FMonolithActionResult::Error(FString::Printf(TEXT("Target chain '%s' not found in retargeter"), *TargetChain));
+		}
+
+		FTargetChainSettings Settings = Controller->GetRetargetChainSettings(FName(*TargetChain));
+		Settings.IK.EnableIK = true;
+		Settings.SpeedPlanting.EnableSpeedPlanting = true;
+		Settings.SpeedPlanting.SpeedThreshold = static_cast<float>(SpeedThreshold);
+		Settings.SpeedPlanting.UnplantStiffness = static_cast<float>(Stiffness);
+		Settings.SpeedPlanting.UnplantCriticalDamping = static_cast<float>(Damping);
+		if (!SpeedCurve.IsEmpty())
+		{
+			Settings.SpeedPlanting.SpeedCurveName = FName(*SpeedCurve);
+		}
+
+		Controller->SetRetargetChainSettings(FName(*TargetChain), Settings);
+		ResolvedChains.Add(TargetChain);
+	}
+
+	FString SnapBone;
+	bool bSnapped = false;
+	if (Params->TryGetStringField(TEXT("snap_to_ground_bone"), SnapBone) && !SnapBone.IsEmpty())
+	{
+		const ERetargetSourceOrTarget Side = ReadSide(Params, TEXT("side"), ERetargetSourceOrTarget::Target);
+		Controller->SnapBoneToGround(FName(*SnapBone), Side);
+		bSnapped = true;
+	}
+
+	Controller->GetAsset()->MarkPackageDirty();
+
+	TSharedPtr<FJsonObject> Root = MakeShared<FJsonObject>();
+	Root->SetStringField(TEXT("retargeter_path"), AssetPath);
+	{
+		TArray<TSharedPtr<FJsonValue>> ChainArr;
+		for (const FString& C : ResolvedChains) { ChainArr.Add(MakeShared<FJsonValueString>(C)); }
+		Root->SetArrayField(TEXT("speed_plant_chains"), ChainArr);
+	}
+	Root->SetNumberField(TEXT("speed_threshold"), SpeedThreshold);
+	Root->SetNumberField(TEXT("stiffness"), Stiffness);
+	Root->SetNumberField(TEXT("critical_damping"), Damping);
+	if (bSnapped) { Root->SetStringField(TEXT("snapped_to_ground_bone"), SnapBone); }
+	return FMonolithActionResult::Success(Root);
+}
+
+#endif // ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
+
 
 // ===========================================================================
 //  Registration

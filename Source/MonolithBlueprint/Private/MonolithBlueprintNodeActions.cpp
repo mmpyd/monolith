@@ -10,6 +10,8 @@
 #include "MonolithBlueprintLayoutActions.h"
 #include "MonolithJsonUtils.h"
 #include "MonolithParamSchema.h"
+
+#include "Runtime/Launch/Resources/Version.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "K2Node_CallFunction.h"
@@ -1277,7 +1279,13 @@ FMonolithActionResult FMonolithBlueprintNodeActions::HandleAddNode(const TShared
 		}
 
 		UK2Node_SwitchEnum* SwitchNode = NewObject<UK2Node_SwitchEnum>(Graph);
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 		SwitchNode->SetEnum(FoundEnum);
+#else
+		// UE 5.5: UK2Node_SwitchEnum::SetEnum lacks BLUEPRINTGRAPH_API export.
+		// ReloadEnum is the virtual interface method (INodeDependingOnEnumInterface) that calls SetEnum.
+		SwitchNode->ReloadEnum(FoundEnum);
+#endif
 		SwitchNode->NodePosX = PosX;
 		SwitchNode->NodePosY = PosY;
 		Graph->AddNode(SwitchNode, true, false);
@@ -2649,7 +2657,13 @@ FMonolithActionResult FMonolithBlueprintNodeActions::HandleResolveNode(const TSh
 		}
 
 		UK2Node_SwitchEnum* SwitchNode = NewObject<UK2Node_SwitchEnum>(TempGraph);
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 		SwitchNode->SetEnum(FoundEnum);
+#else
+		// UE 5.5: UK2Node_SwitchEnum::SetEnum lacks BLUEPRINTGRAPH_API export.
+		// ReloadEnum is the virtual interface method (INodeDependingOnEnumInterface) that calls SetEnum.
+		SwitchNode->ReloadEnum(FoundEnum);
+#endif
 		SwitchNode->AllocateDefaultPins();
 		Node = SwitchNode;
 	}

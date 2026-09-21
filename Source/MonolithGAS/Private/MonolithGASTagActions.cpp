@@ -15,6 +15,7 @@
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Misc/FileHelper.h"
 #include "UObject/SavePackage.h"
+#include "Runtime/Launch/Resources/Version.h"
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -832,7 +833,15 @@ FMonolithActionResult FMonolithGASTagActions::HandleRenameTag(const TSharedPtr<F
 
 		// Use engine API to rename tag in INI (adds new tag, creates redirector, optionally renames children)
 		IGameplayTagsEditorModule& TagsEditor = IGameplayTagsEditorModule::Get();
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 		bool bRenameOk = TagsEditor.RenameTagInINI(OldTag, NewTag, /*bRenameChildren=*/ false);
+#else
+		// UE 5.5 RenameTagInINI takes only (From, To) — no bRenameChildren param.
+		// The 5.7/8 call passes false, i.e. the same behavior 5.5 provides by
+		// default (rename the single tag, do not touch children), so dropping the
+		// argument is behavior-preserving.
+		bool bRenameOk = TagsEditor.RenameTagInINI(OldTag, NewTag);
+#endif
 
 		if (!bRenameOk)
 		{

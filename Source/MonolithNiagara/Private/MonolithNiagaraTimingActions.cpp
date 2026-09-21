@@ -13,6 +13,7 @@
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "UObject/UnrealType.h"
+#include "Runtime/Launch/Resources/Version.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogMonolithNiagaraTiming, Log, All);
 
@@ -967,7 +968,16 @@ FMonolithActionResult FMonolithNiagaraTimingActions::HandleSetEmitterLoopProfile
 	// not on our include path; we route via GetEmitterBase() to get a UObject*).
 	if (Handles[EIdx].GetStatelessEmitter() != nullptr)
 	{
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 		UObject* StatelessEmitter = Handles[EIdx].GetEmitterBase();
+#else
+		// UE 5.5 has no FNiagaraEmitterHandle::GetEmitterBase(). The stateless
+		// emitter is UNiagaraStatelessEmitter* (forward-declared here; derives
+		// from UObject via single inheritance, so the UObject subobject is at
+		// offset 0). reinterpret_cast avoids needing the Internal/ header while
+		// yielding the same UObject* the 5.6+ GetEmitterBase() returns.
+		UObject* StatelessEmitter = reinterpret_cast<UObject*>(Handles[EIdx].GetStatelessEmitter());
+#endif
 		TArray<TSharedPtr<FJsonValue>> StatelessWarnings;
 		return WriteStatelessLoopProfile(StatelessEmitter, Params, StatelessWarnings);
 	}
@@ -1137,8 +1147,16 @@ FMonolithActionResult FMonolithNiagaraTimingActions::HandleGetEmitterTimingSumma
 		// so the helper's defaults (own name, index=0) don't leak through.
 		if (H.GetStatelessEmitter() != nullptr)
 		{
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
+			UObject* StatelessBase = H.GetEmitterBase();
+#else
+			// UE 5.5: no GetEmitterBase(); route via GetStatelessEmitter().
+			// UNiagaraStatelessEmitter derives from UObject (offset 0), so the
+			// reinterpret_cast yields the same UObject* as 5.6+ GetEmitterBase().
+			UObject* StatelessBase = reinterpret_cast<UObject*>(H.GetStatelessEmitter());
+#endif
 			TSharedPtr<FJsonObject> StatelessObj =
-				ReadStatelessLoopProfile(H.GetEmitterBase());
+				ReadStatelessLoopProfile(StatelessBase);
 			StatelessObj->SetStringField(TEXT("name"), HandleName);
 			StatelessObj->SetNumberField(TEXT("index"), i);
 			EmittersArr.Add(MakeShared<FJsonValueObject>(StatelessObj.ToSharedRef()));

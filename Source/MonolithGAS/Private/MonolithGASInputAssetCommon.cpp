@@ -1,5 +1,7 @@
 #include "MonolithGASInputAssetCommon.h"
 
+#include "Runtime/Launch/Resources/Version.h"
+
 #include "AssetRegistry/ARFilter.h"
 #include "AssetRegistry/AssetData.h"
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -335,10 +337,16 @@ TSharedPtr<FJsonObject> MappingContextToJson(const UInputMappingContext* Context
 	Json->SetStringField(TEXT("package_path"), Context->GetOutermost()->GetName());
 	Json->SetStringField(TEXT("name"), Context->GetName());
 	Json->SetStringField(TEXT("description"), Context->ContextDescription.ToString());
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 	Json->SetBoolField(TEXT("filters_by_input_mode"), Context->ShouldFilterMappingByInputMode());
 	Json->SetStringField(TEXT("registration_tracking_mode"),
 		Context->GetRegistrationTrackingMode() == EMappingContextRegistrationTrackingMode::CountRegistrations
 			? TEXT("CountRegistrations") : TEXT("Untracked"));
+#else
+	// UE 5.5: UInputMappingContext does not have input mode filtering or registration tracking modes.
+	Json->SetBoolField(TEXT("filters_by_input_mode"), false);
+	Json->SetStringField(TEXT("registration_tracking_mode"), TEXT("Untracked"));
+#endif
 
 	// GetMappings() is the live DefaultKeyMappings.Mappings array. The legacy
 	// UInputMappingContext::Mappings member is deprecated since UE 5.7 and is only

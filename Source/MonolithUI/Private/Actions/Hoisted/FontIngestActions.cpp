@@ -1,5 +1,6 @@
 // Copyright tumourlove. All Rights Reserved.
 #include "Actions/Hoisted/FontIngestActions.h"
+#include "Runtime/Launch/Resources/Version.h" // ENGINE_MAJOR/MINOR_VERSION for the UFont composite-font gate
 
 // Monolith registry
 #include "MonolithToolRegistry.h"
@@ -328,7 +329,12 @@ FMonolithActionResult MonolithUI::FFontIngestActions::HandleImportFontFamily(con
 
     // UE 5.7: direct public write to UFont::CompositeFont is UE_DEPRECATED -- the
     // header instructs callers to go through GetMutableInternalCompositeFont().
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
     FCompositeFont& Composite = FamilyFont->GetMutableInternalCompositeFont();
+#else
+    // UE 5.5 has no GetMutableInternalCompositeFont(); CompositeFont is public + non-deprecated.
+    FCompositeFont& Composite = FamilyFont->CompositeFont;
+#endif
     Composite.DefaultTypeface.Fonts.Reset();
 
     for (const FFaceResult& R : FaceResults)

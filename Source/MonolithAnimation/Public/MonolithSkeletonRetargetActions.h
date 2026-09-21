@@ -7,8 +7,14 @@
 class USkeleton;
 class UIKRigDefinition;
 class UIKRigController;
+// IK Rig solver types are named only in doc comments below; the actual solver
+// access is version-normalised in MonolithIKRigCompat.h (5.5 uses UObject solvers,
+// 5.6+ uses these USTRUCTs). Forward-declared for 5.6+ documentation only.
+#include "Runtime/Launch/Resources/Version.h"
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 struct FIKRigSolverBase;
 struct FIKRigBoneSettingsBase;
+#endif
 
 /**
  * Legacy per-bone translation retargeting authoring (T1-R4) +

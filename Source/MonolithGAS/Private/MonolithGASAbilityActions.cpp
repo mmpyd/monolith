@@ -1634,8 +1634,11 @@ FMonolithActionResult FMonolithGASAbilityActions::HandleAddAbilityTaskNode(const
 	int32 PosX, PosY;
 	ParsePosition(Params, PosX, PosY, 400, 0);
 
-	// Create the latent ability call node
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 	UK2Node_LatentAbilityCall* TaskNode = NewObject<UK2Node_LatentAbilityCall>(Graph);
+#else
+	UK2Node_BaseAsyncTask* TaskNode = Cast<UK2Node_BaseAsyncTask>(NewObject<UEdGraphNode>(Graph, MonolithGAS::GetLatentAbilityCallClass()));
+#endif
 	// ProxyFactoryFunctionName/ProxyFactoryClass/ProxyClass are protected in UE 5.7 — set via reflection
 	{
 		FProperty* FFNProp = TaskNode->GetClass()->FindPropertyByName(TEXT("ProxyFactoryFunctionName"));
@@ -2629,7 +2632,11 @@ FMonolithActionResult FMonolithGASAbilityActions::HandleGetAbilityTaskPins(const
 
 	if (FactoryFunc)
 	{
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 		UK2Node_LatentAbilityCall* TempNode = NewObject<UK2Node_LatentAbilityCall>(TempGraph, NAME_None, RF_Transient);
+#else
+		UK2Node_BaseAsyncTask* TempNode = Cast<UK2Node_BaseAsyncTask>(NewObject<UEdGraphNode>(TempGraph, MonolithGAS::GetLatentAbilityCallClass(), NAME_None, RF_Transient));
+#endif
 		// Protected in UE 5.7 — set via reflection
 		{
 			FProperty* FFNProp = TempNode->GetClass()->FindPropertyByName(TEXT("ProxyFactoryFunctionName"));
@@ -2940,7 +2947,11 @@ FMonolithActionResult FMonolithGASAbilityActions::HandleGetAbilityGraphFlow(cons
 		}
 
 		// Check for latent ability task nodes
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 		if (Node->IsA<UK2Node_LatentAbilityCall>())
+#else
+		if (Node->IsA(MonolithGAS::GetLatentAbilityCallClass()))
+#endif
 		{
 			AbilityTaskCount++;
 
@@ -3081,7 +3092,11 @@ FMonolithActionResult FMonolithGASAbilityActions::HandleValidateAbility(const TS
 				if (EventName.Contains(TEXT("ActivateAbility"))) bHasActivateAbility = true;
 			}
 
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 			if (Node->IsA<UK2Node_LatentAbilityCall>())
+#else
+			if (Node->IsA(MonolithGAS::GetLatentAbilityCallClass()))
+#endif
 			{
 				AbilityTaskCount++;
 				for (UEdGraphPin* Pin : Node->Pins)
@@ -3525,7 +3540,11 @@ FMonolithActionResult FMonolithGASAbilityActions::HandleValidateAbilityBlueprint
 		if (!Graph) continue;
 		for (UEdGraphNode* Node : Graph->Nodes)
 		{
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 			if (Node && Node->IsA<UK2Node_LatentAbilityCall>())
+#else
+			if (Node && Node->IsA(MonolithGAS::GetLatentAbilityCallClass()))
+#endif
 			{
 				bHasAbilityTasks = true;
 				if (!bIsAbilityBP)
@@ -3592,7 +3611,11 @@ FMonolithActionResult FMonolithGASAbilityActions::HandleValidateAbilityBlueprint
 				if (EventName.Contains(TEXT("ActivateAbility"))) bHasActivateAbility = true;
 			}
 
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 			if (Node->IsA<UK2Node_LatentAbilityCall>())
+#else
+			if (Node->IsA(MonolithGAS::GetLatentAbilityCallClass()))
+#endif
 			{
 				TaskNodeCount++;
 				for (UEdGraphPin* Pin : Node->Pins)

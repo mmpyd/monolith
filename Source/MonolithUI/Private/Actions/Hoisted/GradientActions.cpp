@@ -18,7 +18,12 @@
 #include "Materials/MaterialInterface.h"
 #include "Materials/MaterialInstance.h"
 #include "Materials/MaterialInstanceConstant.h"
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 #include "Materials/MaterialParameters.h"
+#else
+// UE 5.5 declares FMaterialParameterInfo/FMaterialParameterMetadata in MaterialTypes.h.
+#include "MaterialTypes.h"
+#endif
 
 // MaterialEditor module -- required for UpdateMaterialInstance after static switch writes
 #include "MaterialEditingLibrary.h"

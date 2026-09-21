@@ -1,14 +1,22 @@
 #include "MonolithStatActions.h"
 #include "MonolithParamSchema.h"
 
+#include "Runtime/Launch/Resources/Version.h"
+
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "HAL/PlatformTime.h"
 
 #if STATS
 #include "Stats/StatsData.h"
-#include "Stats/StatsCommand.h"
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
+#include "Stats/StatsCommand.h"      // UE::Stats::DirectStatsCommand
 #include "Stats/StatsSystemTypes.h"
+#else
+// UE 5.5: UE::Stats::DirectStatsCommand is declared in Stats/Stats2.h; there is no
+// StatsCommand.h / StatsSystemTypes.h split yet.
+#include "Stats/Stats2.h"
+#endif
 #endif
 
 DEFINE_LOG_CATEGORY_STATIC(LogMonolithStat, Log, All);
@@ -177,7 +185,11 @@ FMonolithActionResult FMonolithStatActions::HandleGetStatGroupValues(const TShar
 	// Enable collection for the group. DirectStatsCommand expects the leading "stat" token; the
 	// group-enable subcommand takes the SHORT name (the console form strips STATGROUP_).
 	const FString EnableCmd = FString::Printf(TEXT("stat group enable %s"), *GroupShort);
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 	UE::Stats::DirectStatsCommand(*EnableCmd, /*bBlockForCompletion=*/true);
+#else
+	::DirectStatsCommand(*EnableCmd, /*bBlockForCompletion=*/true);
+#endif
 
 	// Re-fetch the local state (it is a singleton; enabling may have registered the group).
 	const int64 LatestFrame = Stats.GetLatestValidFrame();
@@ -194,7 +206,11 @@ FMonolithActionResult FMonolithStatActions::HandleGetStatGroupValues(const TShar
 		if (!bGroupKnownBefore)
 		{
 			const FString DisableCmd = FString::Printf(TEXT("stat group disable %s"), *GroupShort);
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 			UE::Stats::DirectStatsCommand(*DisableCmd, /*bBlockForCompletion=*/true);
+#else
+			::DirectStatsCommand(*DisableCmd, /*bBlockForCompletion=*/true);
+#endif
 		}
 	};
 

@@ -1,5 +1,6 @@
 // MonolithUIActions.cpp
 #include "MonolithUIActions.h"
+#include "Runtime/Launch/Resources/Version.h"  // ENGINE_MAJOR/MINOR_VERSION for the 5.5 DeleteWidgets gate
 #include "MonolithUIInternal.h"
 #include "MonolithParamSchema.h"
 #include "MonolithPackagePathValidator.h"
@@ -631,7 +632,19 @@ FMonolithActionResult FMonolithUIActions::HandleRemoveWidget(const TSharedPtr<FJ
 
     TSet<UWidget*> WidgetsToDelete;
     WidgetsToDelete.Add(Widget);
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
     FWidgetBlueprintEditorUtils::DeleteWidgets(WBP, WidgetsToDelete, FWidgetBlueprintEditorUtils::EDeleteWidgetWarningType::DeleteSilently);
+#else
+    // UE 5.5: FWidgetBlueprintEditorUtils::DeleteWidgets requires a live
+    // TSharedRef<FWidgetBlueprintEditor> and a TSet<FWidgetReference> (which is
+    // built from the editor). This handler is headless (only a UWidgetBlueprint*
+    // and the widget instances are available), so that overload can't be reached
+    // here. Fall back to removing the widget from the widget tree directly; the
+    // subsequent MarkBlueprintAsStructurallyModified + CompileBlueprint below
+    // rebuild the generated class. NOTE: unlike DeleteWidgets this does not run
+    // the editor's reference-fixup / binding cleanup pass — see port report.
+    WBP->WidgetTree->RemoveWidget(Widget);
+#endif
 
     FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WBP);
 

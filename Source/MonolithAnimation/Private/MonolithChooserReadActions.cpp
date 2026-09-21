@@ -250,7 +250,13 @@ namespace MonolithChooserRead
 		{
 			// Quiet: a missing /Script/Chooser module is an expected state here, not a fault.
 			ChooserClass = LoadObject<UClass>(nullptr, TEXT("/Script/Chooser.ChooserTable"),
-				FStringView(), LOAD_NoWarn | LOAD_Quiet);
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
+				FStringView(),
+#else
+				// UE 5.5 LoadObject's 3rd param is const TCHAR* Filename (no FStringView overload).
+				nullptr,
+#endif
+				LOAD_NoWarn | LOAD_Quiet);
 		}
 		return ChooserClass;
 	}

@@ -3,6 +3,8 @@
 #include "MonolithParamSchema.h"
 #include "MonolithJsonUtils.h" // LogMonolith
 
+#include "Runtime/Launch/Resources/Version.h"
+
 // Sound Cue core
 #include "Sound/SoundCue.h"
 #include "Sound/SoundWave.h"
@@ -79,8 +81,14 @@ const TMap<FString, UClass*>& FMonolithAudioSoundCueActions::GetNodeTypeRegistry
 		Registry.Add(TEXT("DistanceCrossFade"),    USoundNodeDistanceCrossFade::StaticClass());
 		Registry.Add(TEXT("ParamCrossFade"),        USoundNodeParamCrossFade::StaticClass());
 		Registry.Add(TEXT("Enveloper"),            USoundNodeEnveloper::StaticClass());
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 		Registry.Add(TEXT("Oscillator"),           USoundNodeOscillator::StaticClass());
 		Registry.Add(TEXT("Doppler"),              USoundNodeDoppler::StaticClass());
+#else
+		// UE 5.5: USoundNodeOscillator and USoundNodeDoppler lack ENGINE_API export.
+		Registry.Add(TEXT("Oscillator"),           FindObject<UClass>(nullptr, TEXT("/Script/Engine.SoundNodeOscillator")));
+		Registry.Add(TEXT("Doppler"),              FindObject<UClass>(nullptr, TEXT("/Script/Engine.SoundNodeDoppler")));
+#endif
 		Registry.Add(TEXT("SoundClass"),           USoundNodeSoundClass::StaticClass());
 		Registry.Add(TEXT("Mature"),               USoundNodeMature::StaticClass());
 		Registry.Add(TEXT("QualityLevel"),         USoundNodeQualityLevel::StaticClass());

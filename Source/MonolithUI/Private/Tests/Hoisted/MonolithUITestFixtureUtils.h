@@ -2,6 +2,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "MonolithUICommon.h"  // MonolithUI::ClearWidgetVarMap (5.5 widget-var gate)
 #include "WidgetBlueprint.h"
 #include "WidgetBlueprintFactory.h"
 #include "Blueprint/UserWidget.h"
@@ -83,7 +84,7 @@ namespace MonolithUI::TestUtils
         }
 
         Tree->RootWidget = nullptr;
-        WBP->WidgetVariableNameToGuidMap.Empty();
+        MonolithUI::ClearWidgetVarMap(WBP);
     }
 
     /**

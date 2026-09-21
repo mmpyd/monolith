@@ -4,7 +4,10 @@
 #include "MonolithParamSchema.h"
 #include "MonolithPackagePathValidator.h"
 
+#include "Runtime/Launch/Resources/Version.h"
+
 #include "Materials/Material.h"
+#include "MaterialDomain.h" // EMaterialDomain / MD_PostProcess (own header since UE5.1; on 5.5 not pulled in transitively)
 #include "Materials/MaterialExpression.h"
 #include "Materials/MaterialExpressionParameter.h"
 #include "Materials/MaterialExpressionTextureBase.h"
@@ -59,6 +62,35 @@
 #include "Materials/MaterialParameterCollection.h"
 #include "MaterialGraph/MaterialGraphNode.h"
 #include "IMonolithGraphFormatter.h"
+
+static void MonolithRebuildCustomOutputs(UMaterialExpressionCustom* CustomExpr)
+{
+	if (!CustomExpr) return;
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
+	CustomExpr->RebuildOutputs();
+#else
+	// UE 5.5: UMaterialExpressionCustom::RebuildOutputs lacks ENGINE_API export.
+	// We reproduce its implementation using the public UMaterialExpression members.
+	CustomExpr->Outputs.Reset(CustomExpr->AdditionalOutputs.Num() + 1);
+	if (CustomExpr->AdditionalOutputs.Num() == 0)
+	{
+		CustomExpr->bShowOutputNameOnPin = false;
+		CustomExpr->Outputs.Add(FExpressionOutput(TEXT("")));
+	}
+	else
+	{
+		CustomExpr->bShowOutputNameOnPin = true;
+		CustomExpr->Outputs.Add(FExpressionOutput(TEXT("return")));
+		for (const FCustomOutput& CustomOutput : CustomExpr->AdditionalOutputs)
+		{
+			if (!CustomOutput.OutputName.IsNone())
+			{
+				CustomExpr->Outputs.Add(FExpressionOutput(CustomOutput.OutputName));
+			}
+		}
+	}
+#endif
+}
 
 // ============================================================================
 // Pin name normalization — UE's GetShortenPinName converts raw names to
@@ -2416,7 +2448,7 @@ FMonolithActionResult FMonolithMaterialActions::CreateCustomHLSLNode(const TShar
 		}
 	}
 
-	CustomExpr->RebuildOutputs();
+	MonolithRebuildCustomOutputs(CustomExpr);
 	GEditor->EndTransaction();
 
 	auto ResultJson = MakeShared<FJsonObject>();
@@ -3317,7 +3349,14 @@ FMonolithActionResult FMonolithMaterialActions::RecompileMaterial(const TSharedP
 		ResultJson->SetNumberField(TEXT("num_vertex_shader_instructions"), Stats.NumVertexShaderInstructions);
 
 		const EShaderPlatform ShaderPlatform = GShaderPlatformForFeatureLevel[GMaxRHIFeatureLevel];
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 		FMaterialResource* MatResource = BaseMat->GetMaterialResource(ShaderPlatform);
+#else
+		// UE 5.5 GetMaterialResource takes ERHIFeatureLevel::Type (no EShaderPlatform
+		// overload). ShaderPlatform above is GShaderPlatformForFeatureLevel[GMaxRHIFeatureLevel],
+		// so GMaxRHIFeatureLevel selects the same resource.
+		FMaterialResource* MatResource = BaseMat->GetMaterialResource(GMaxRHIFeatureLevel);
+#endif
 		bool bIsCompiled = false;
 		if (MatResource)
 		{
@@ -3410,7 +3449,13 @@ FMonolithActionResult FMonolithMaterialActions::GetCompilationStats(const TShare
 
 	// Get material resource for the current shader platform
 	const EShaderPlatform ShaderPlatform = GShaderPlatformForFeatureLevel[GMaxRHIFeatureLevel];
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 	FMaterialResource* MatResource = BaseMat->GetMaterialResource(ShaderPlatform);
+#else
+	// UE 5.5 GetMaterialResource takes ERHIFeatureLevel::Type (no EShaderPlatform
+	// overload). GMaxRHIFeatureLevel selects the same resource ShaderPlatform maps to.
+	FMaterialResource* MatResource = BaseMat->GetMaterialResource(GMaxRHIFeatureLevel);
+#endif
 	if (MatResource)
 	{
 		bool bIsCompiled = MatResource->IsGameThreadShaderMapComplete();
@@ -5211,7 +5256,7 @@ FMonolithActionResult FMonolithMaterialActions::UpdateCustomHlslNode(const TShar
 	}
 
 	// Rebuild outputs after any structural change
-	CustomExpr->RebuildOutputs();
+	MonolithRebuildCustomOutputs(CustomExpr);
 
 	Mat->PreEditChange(nullptr);
 	Mat->PostEditChange();
@@ -6194,7 +6239,7 @@ void FMonolithMaterialActions::BuildGraphFromSpec(
 				}
 			}
 
-			CustomExpr->RebuildOutputs();
+			MonolithRebuildCustomOutputs(CustomExpr);
 			// Mirror Phase 1 empty-key guard: never register a blank key in IdToExpr
 			FString CustomLookupId = !Id.IsEmpty() ? Id : (!CustomUserName.IsEmpty() ? CustomUserName : CustomExpr->GetName());
 			IdToExpr.Add(CustomLookupId, CustomExpr);
@@ -6954,7 +6999,11 @@ FMonolithActionResult FMonolithMaterialActions::ExportFunctionGraph(const TShare
 			InputJson->SetArrayField(TEXT("preview_value"), PreviewArr);
 
 			// Blend input relevance
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 			InputJson->SetNumberField(TEXT("blend_input_relevance"), static_cast<int32>(FuncInput->BlendInputRelevance));
+#endif
+			// UE 5.5: UMaterialExpressionFunctionInput has no BlendInputRelevance member
+			// and no equivalent, so the field is omitted on 5.5.
 
 			if (bIncludePositions)
 			{
@@ -8350,7 +8399,13 @@ FMonolithActionResult FMonolithMaterialActions::CreatePbrMaterialFromDisk(const 
 
 	// Sampler count from material resource
 	const EShaderPlatform ShaderPlatform = GShaderPlatformForFeatureLevel[GMaxRHIFeatureLevel];
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 	FMaterialResource* MatResource = NewMat->GetMaterialResource(ShaderPlatform);
+#else
+	// UE 5.5 GetMaterialResource takes ERHIFeatureLevel::Type (no EShaderPlatform
+	// overload). GMaxRHIFeatureLevel selects the same resource ShaderPlatform maps to.
+	FMaterialResource* MatResource = NewMat->GetMaterialResource(GMaxRHIFeatureLevel);
+#endif
 	if (MatResource)
 	{
 		StatsJson->SetNumberField(TEXT("num_samplers"), MatResource->GetSamplerUsage());
@@ -8956,6 +9011,7 @@ FMonolithActionResult FMonolithMaterialActions::GetFunctionInstanceInfo(const TS
 	ResultJson->SetArrayField(TEXT("texture_collection_overrides"), TexCollArr);
 
 	// --- Parameter collection parameter overrides ---
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 	TArray<TSharedPtr<FJsonValue>> ParamCollArr;
 	for (const auto& Param : MFI->ParameterCollectionParameterValues)
 	{
@@ -8965,6 +9021,9 @@ FMonolithActionResult FMonolithMaterialActions::GetFunctionInstanceInfo(const TS
 		ParamCollArr.Add(MakeShared<FJsonValueObject>(PJson));
 	}
 	ResultJson->SetArrayField(TEXT("parameter_collection_overrides"), ParamCollArr);
+#endif
+	// UE 5.5: UMaterialFunctionInstance has no ParameterCollectionParameterValues
+	// array, so the parameter_collection_overrides field is omitted on 5.5.
 
 	// --- Font parameter overrides ---
 	TArray<TSharedPtr<FJsonValue>> FontArr;
@@ -9088,7 +9147,10 @@ FMonolithActionResult FMonolithMaterialActions::GetFunctionInstanceInfo(const TS
 
 	// Total override count
 	int32 TotalOverrides = ScalarArr.Num() + VectorArr.Num() + DoubleVecArr.Num()
-		+ TextureArr.Num() + TexCollArr.Num() + ParamCollArr.Num()
+		+ TextureArr.Num() + TexCollArr.Num()
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
+		+ ParamCollArr.Num()  // UE 5.5: UMaterialFunctionInstance has no ParameterCollectionParameterValues
+#endif
 		+ FontArr.Num() + RVTArr.Num() + SVTArr.Num()
 		+ SwitchArr.Num() + MaskArr.Num();
 	ResultJson->SetNumberField(TEXT("total_overrides"), TotalOverrides);
@@ -9150,6 +9212,7 @@ FMonolithActionResult FMonolithMaterialActions::RenameFunctionParameterGroup(con
 		return FMonolithActionResult::Error(FString::Printf(TEXT("Asset '%s' is not a MaterialFunctionInterface (type: %s)"), *AssetPath, *LoadedAsset->GetClass()->GetName()));
 	}
 
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 	bool bRenamed = UMaterialEditingLibrary::RenameMaterialFunctionParameterGroup(MatFuncInterface, FName(*OldGroup), FName(*NewGroup));
 
 	auto ResultJson = MakeShared<FJsonObject>();
@@ -9157,6 +9220,43 @@ FMonolithActionResult FMonolithMaterialActions::RenameFunctionParameterGroup(con
 	ResultJson->SetBoolField(TEXT("renamed"), bRenamed);
 
 	return FMonolithActionResult::Success(ResultJson);
+#else
+	// UE 5.5: UMaterialEditingLibrary lacks RenameMaterialFunctionParameterGroup.
+	// We iterate all expressions in the MaterialFunctionInterface and update Group on any parameter expression matching OldGroup.
+	const FName OldGroupName(*OldGroup);
+	const FName NewGroupName(*NewGroup);
+	bool bRenamed = false;
+
+	for (UMaterialExpression* Expr : MatFuncInterface->GetExpressions())
+	{
+		if (!Expr)
+		{
+			continue;
+		}
+
+		if (FNameProperty* GroupProp = CastField<FNameProperty>(Expr->GetClass()->FindPropertyByName(TEXT("Group"))))
+		{
+			FName CurrentGroup = *GroupProp->ContainerPtrToValuePtr<FName>(Expr);
+			if (CurrentGroup == OldGroupName)
+			{
+				Expr->Modify();
+				*GroupProp->ContainerPtrToValuePtr<FName>(Expr) = NewGroupName;
+				bRenamed = true;
+			}
+		}
+	}
+
+	if (bRenamed)
+	{
+		MatFuncInterface->MarkPackageDirty();
+	}
+
+	auto ResultJson = MakeShared<FJsonObject>();
+	ResultJson->SetStringField(TEXT("asset_path"), AssetPath);
+	ResultJson->SetBoolField(TEXT("renamed"), bRenamed);
+
+	return FMonolithActionResult::Success(ResultJson);
+#endif
 }
 
 // ============================================================================

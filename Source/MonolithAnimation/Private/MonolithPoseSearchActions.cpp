@@ -7,6 +7,7 @@
 #include "PoseSearch/PoseSearchNormalizationSet.h"
 #include "PoseSearch/PoseSearchSchema.h"
 #include "PoseSearch/PoseSearchFeatureChannel.h"
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 #include "PoseSearch/PoseSearchFeatureChannel_Position.h"
 #include "PoseSearch/PoseSearchFeatureChannel_Velocity.h"
 #include "PoseSearch/PoseSearchFeatureChannel_Heading.h"
@@ -16,6 +17,20 @@
 #include "PoseSearch/PoseSearchFeatureChannel_Distance.h"
 #include "PoseSearch/PoseSearchFeatureChannel_Curve.h"
 #include "PoseSearch/PoseSearchFeatureChannel_Group.h"
+#else
+// UE 5.5: these concrete channel headers live in the PoseSearch module's
+// Runtime/Private/ (bare-named, reached via the 5.5 PrivateIncludePaths entry in
+// MonolithAnimation.Build.cs). PoseSearchFeatureChannel_Distance does not exist in
+// 5.5 — the "Distance" channel type is gated out at its ResolveChannelClass site.
+#include "PoseSearchFeatureChannel_Position.h"
+#include "PoseSearchFeatureChannel_Velocity.h"
+#include "PoseSearchFeatureChannel_Heading.h"
+#include "PoseSearchFeatureChannel_Pose.h"
+#include "PoseSearchFeatureChannel_Trajectory.h"
+#include "PoseSearchFeatureChannel_Phase.h"
+#include "PoseSearchFeatureChannel_Curve.h"
+#include "PoseSearchFeatureChannel_Group.h"
+#endif
 #include "PoseSearch/PoseSearchIndex.h"
 #include "PoseSearch/PoseSearchDerivedData.h"
 #include "PoseSearch/PoseSearchAnimNotifies.h"
@@ -26,7 +41,24 @@
 #include "AnimationBlueprintLibrary.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "UObject/UnrealType.h"
+#include "Animation/BlendSpace.h"
+#include "Animation/AnimComposite.h"
+#include "Animation/AnimMontage.h"
 #include "Editor.h"
+
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
+using FMonolithPoseSearchAnimAsset = FPoseSearchDatabaseAnimationAsset;
+inline const FMonolithPoseSearchAnimAsset* MonolithGetDatabaseAnimationAsset(const UPoseSearchDatabase* DB, int32 Index)
+{
+	return DB ? DB->GetDatabaseAnimationAsset(Index) : nullptr;
+}
+#else
+using FMonolithPoseSearchAnimAsset = FPoseSearchDatabaseAnimationAssetBase;
+inline const FMonolithPoseSearchAnimAsset* MonolithGetDatabaseAnimationAsset(const UPoseSearchDatabase* DB, int32 Index)
+{
+	return DB ? DB->GetAnimationAssetBase(Index) : nullptr;
+}
+#endif
 
 // ---------------------------------------------------------------------------
 // File-local static handlers (Motion Matching Pack — no header decl)
@@ -392,7 +424,7 @@ FMonolithActionResult FMonolithPoseSearchActions::HandleGetPoseSearchDatabase(co
 	TArray<TSharedPtr<FJsonValue>> SeqArray;
 	for (int32 i = 0; i < NumAssets; ++i)
 	{
-		const FPoseSearchDatabaseAnimationAsset* AnimAsset = Database->GetDatabaseAnimationAsset(i);
+		const FMonolithPoseSearchAnimAsset* AnimAsset = MonolithGetDatabaseAnimationAsset(Database, i);
 		if (!AnimAsset) continue;
 
 		TSharedPtr<FJsonObject> SeqObj = MakeShared<FJsonObject>();
@@ -452,14 +484,49 @@ FMonolithActionResult FMonolithPoseSearchActions::HandleAddDatabaseSequence(cons
 	GEditor->BeginTransaction(FText::FromString(TEXT("Add PoseSearch Database Animation")));
 	Database->Modify();
 
+	const int32 IndexBefore = Database->GetNumAnimationAssets();
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 	FPoseSearchDatabaseAnimationAsset NewEntry;
 	NewEntry.AnimAsset = AnimAsset;
 #if WITH_EDITORONLY_DATA
 	NewEntry.bEnabled = bEnabled;
 #endif
-
-	const int32 IndexBefore = Database->GetNumAnimationAssets();
 	Database->AddAnimationAsset(NewEntry);
+#else
+	if (UAnimSequence* Seq = Cast<UAnimSequence>(AnimAsset))
+	{
+		FPoseSearchDatabaseSequence NewAsset;
+		NewAsset.Sequence = Seq;
+		NewAsset.bEnabled = bEnabled;
+		Database->AddAnimationAsset(FInstancedStruct::Make(NewAsset));
+	}
+	else if (UBlendSpace* BS = Cast<UBlendSpace>(AnimAsset))
+	{
+		FPoseSearchDatabaseBlendSpace NewAsset;
+		NewAsset.BlendSpace = BS;
+		NewAsset.bEnabled = bEnabled;
+		Database->AddAnimationAsset(FInstancedStruct::Make(NewAsset));
+	}
+	else if (UAnimComposite* Comp = Cast<UAnimComposite>(AnimAsset))
+	{
+		FPoseSearchDatabaseAnimComposite NewAsset;
+		NewAsset.AnimComposite = Comp;
+		NewAsset.bEnabled = bEnabled;
+		Database->AddAnimationAsset(FInstancedStruct::Make(NewAsset));
+	}
+	else if (UAnimMontage* Montage = Cast<UAnimMontage>(AnimAsset))
+	{
+		FPoseSearchDatabaseAnimMontage NewAsset;
+		NewAsset.AnimMontage = Montage;
+		NewAsset.bEnabled = bEnabled;
+		Database->AddAnimationAsset(FInstancedStruct::Make(NewAsset));
+	}
+	else
+	{
+		GEditor->EndTransaction();
+		return FMonolithActionResult::Error(FString::Printf(TEXT("Unsupported animation asset class '%s' for PoseSearchDatabase in UE 5.5"), *AnimAsset->GetClass()->GetName()));
+	}
+#endif
 
 	GEditor->EndTransaction();
 	Database->MarkPackageDirty();
@@ -491,7 +558,7 @@ FMonolithActionResult FMonolithPoseSearchActions::HandleRemoveDatabaseSequence(c
 
 	// Capture info before removal
 	FString RemovedAnimPath;
-	if (const FPoseSearchDatabaseAnimationAsset* AnimAsset = Database->GetDatabaseAnimationAsset(SequenceIndex))
+	if (const FMonolithPoseSearchAnimAsset* AnimAsset = MonolithGetDatabaseAnimationAsset(Database, SequenceIndex))
 	{
 		if (UObject* Asset = AnimAsset->GetAnimationAsset())
 		{
@@ -552,7 +619,7 @@ FMonolithActionResult FMonolithPoseSearchActions::HandleGetDatabaseStats(const T
 		TArray<TSharedPtr<FJsonValue>> EntryArray;
 		for (int32 i = 0; i < EntryCount; ++i)
 		{
-			const FPoseSearchDatabaseAnimationAsset* Entry = Database->GetDatabaseAnimationAsset(i);
+			const FMonolithPoseSearchAnimAsset* Entry = MonolithGetDatabaseAnimationAsset(Database, i);
 			if (!Entry) continue;
 
 			TSharedPtr<FJsonObject> EntryObj = MakeShared<FJsonObject>();
@@ -618,7 +685,9 @@ FMonolithActionResult FMonolithPoseSearchActions::HandleGetDatabaseStats(const T
 	case EPoseSearchMode::BruteForce: SearchModeStr = TEXT("BruteForce"); break;
 	case EPoseSearchMode::PCAKDTree: SearchModeStr = TEXT("PCAKDTree"); break;
 	case EPoseSearchMode::VPTree: SearchModeStr = TEXT("VPTree"); break;
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 	case EPoseSearchMode::EventOnly: SearchModeStr = TEXT("EventOnly"); break;
+#endif
 	default: SearchModeStr = TEXT("Unknown"); break;
 	}
 	Root->SetStringField(TEXT("search_mode"), SearchModeStr);
@@ -794,7 +863,9 @@ static UClass* ResolveChannelClass(const FString& TypeStr)
 	if (TypeStr.Equals(TEXT("Pose"), ESearchCase::IgnoreCase))     return UPoseSearchFeatureChannel_Pose::StaticClass();
 	if (TypeStr.Equals(TEXT("Trajectory"), ESearchCase::IgnoreCase)) return UPoseSearchFeatureChannel_Trajectory::StaticClass();
 	if (TypeStr.Equals(TEXT("Phase"), ESearchCase::IgnoreCase))    return UPoseSearchFeatureChannel_Phase::StaticClass();
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 	if (TypeStr.Equals(TEXT("Distance"), ESearchCase::IgnoreCase)) return UPoseSearchFeatureChannel_Distance::StaticClass();
+#endif // UE 5.5 has no UPoseSearchFeatureChannel_Distance
 	if (TypeStr.Equals(TEXT("Curve"), ESearchCase::IgnoreCase))    return UPoseSearchFeatureChannel_Curve::StaticClass();
 	if (TypeStr.Equals(TEXT("Group"), ESearchCase::IgnoreCase))    return UPoseSearchFeatureChannel_Group::StaticClass();
 	return nullptr;
@@ -810,6 +881,7 @@ static UClass* ResolveChannelClass(const FString& TypeStr)
 // TArray<FPoseSearchDatabaseAnimationAsset>, so copying does not slice.
 // ---------------------------------------------------------------------------
 
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 static void MonolithCommitDatabaseAnimationAsset(
 	UPoseSearchDatabase* Database,
 	const FPoseSearchDatabaseAnimationAsset& Entry,
@@ -824,6 +896,7 @@ static void MonolithCommitDatabaseAnimationAsset(
 	}
 #endif
 }
+#endif
 
 // ---------------------------------------------------------------------------
 // set_database_sequence_properties — Wave 14
@@ -842,6 +915,7 @@ FMonolithActionResult FMonolithPoseSearchActions::HandleSetDatabaseSequencePrope
 	if (SeqIndex < 0 || SeqIndex >= NumAssets)
 		return FMonolithActionResult::Error(FString::Printf(TEXT("Invalid sequence_index %d (database has %d entries)"), SeqIndex, NumAssets));
 
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 	const FPoseSearchDatabaseAnimationAsset* SourceEntry = Database->GetDatabaseAnimationAsset(SeqIndex);
 	if (!SourceEntry)
 		return FMonolithActionResult::Error(FString::Printf(TEXT("Failed to get entry at index %d"), SeqIndex));
@@ -929,6 +1003,97 @@ FMonolithActionResult FMonolithPoseSearchActions::HandleSetDatabaseSequencePrope
 #endif
 
 	return FMonolithActionResult::Success(Root);
+#else
+	// UE 5.5 path: mutate the struct in-place via GetMutableAnimationAssetBase
+	FPoseSearchDatabaseAnimationAssetBase* Entry = Database->GetMutableAnimationAssetBase(SeqIndex);
+	if (!Entry)
+		return FMonolithActionResult::Error(FString::Printf(TEXT("Failed to get entry at index %d"), SeqIndex));
+
+	GEditor->BeginTransaction(FText::FromString(TEXT("Set PoseSearch Database Sequence Properties")));
+	Database->Modify();
+
+#if WITH_EDITORONLY_DATA
+	if (Params->HasField(TEXT("enabled")))
+	{
+		Entry->SetIsEnabled(Params->GetBoolField(TEXT("enabled")));
+	}
+
+	if (Params->HasField(TEXT("disable_reselection")))
+	{
+		Entry->SetDisableReselection(Params->GetBoolField(TEXT("disable_reselection")));
+	}
+
+	if (Params->HasField(TEXT("mirror_option")))
+	{
+		FString MirrorStr = Params->GetStringField(TEXT("mirror_option"));
+		if (MirrorStr.Equals(TEXT("UnmirroredOnly"), ESearchCase::IgnoreCase))
+			Entry->MirrorOption = EPoseSearchMirrorOption::UnmirroredOnly;
+		else if (MirrorStr.Equals(TEXT("MirroredOnly"), ESearchCase::IgnoreCase))
+			Entry->MirrorOption = EPoseSearchMirrorOption::MirroredOnly;
+		else if (MirrorStr.Equals(TEXT("UnmirroredAndMirrored"), ESearchCase::IgnoreCase))
+			Entry->MirrorOption = EPoseSearchMirrorOption::UnmirroredAndMirrored;
+		else
+		{
+			GEditor->EndTransaction();
+			return FMonolithActionResult::Error(FString::Printf(TEXT("Invalid mirror_option: '%s'. Use UnmirroredOnly, MirroredOnly, or UnmirroredAndMirrored"), *MirrorStr));
+		}
+	}
+
+	if (Params->HasField(TEXT("sampling_range_start")) || Params->HasField(TEXT("sampling_range_end")))
+	{
+		FFloatInterval CurrentRange = Entry->GetSamplingRange();
+		float Start = Params->HasField(TEXT("sampling_range_start"))
+			? static_cast<float>(Params->GetNumberField(TEXT("sampling_range_start")))
+			: CurrentRange.Min;
+		float End = Params->HasField(TEXT("sampling_range_end"))
+			? static_cast<float>(Params->GetNumberField(TEXT("sampling_range_end")))
+			: CurrentRange.Max;
+		FFloatInterval NewRange(Start, End);
+		FInstancedStruct& Struct = Database->GetMutableAnimationAssetStruct(SeqIndex);
+		if (const UScriptStruct* SS = Struct.GetScriptStruct())
+		{
+			if (FStructProperty* Prop = CastField<FStructProperty>(SS->FindPropertyByName(TEXT("SamplingRange"))))
+			{
+				Prop->SetValue_InContainer(Struct.GetMutableMemory(), &NewRange);
+			}
+		}
+	}
+#endif // WITH_EDITORONLY_DATA
+
+	GEditor->EndTransaction();
+	Database->MarkPackageDirty();
+
+	// Build response — read back current state
+	TSharedPtr<FJsonObject> Root = MakeShared<FJsonObject>();
+	Root->SetStringField(TEXT("asset_path"), AssetPath);
+	Root->SetNumberField(TEXT("sequence_index"), SeqIndex);
+
+	if (UObject* AnimAsset = Entry->GetAnimationAsset())
+	{
+		Root->SetStringField(TEXT("animation"), AnimAsset->GetPathName());
+	}
+
+#if WITH_EDITORONLY_DATA
+	Root->SetBoolField(TEXT("enabled"), Entry->IsEnabled());
+	Root->SetBoolField(TEXT("disable_reselection"), Entry->IsDisableReselection());
+
+	FString MirrorStr;
+	switch (Entry->GetMirrorOption())
+	{
+	case EPoseSearchMirrorOption::UnmirroredOnly:        MirrorStr = TEXT("UnmirroredOnly"); break;
+	case EPoseSearchMirrorOption::MirroredOnly:          MirrorStr = TEXT("MirroredOnly"); break;
+	case EPoseSearchMirrorOption::UnmirroredAndMirrored: MirrorStr = TEXT("UnmirroredAndMirrored"); break;
+	default:                                             MirrorStr = TEXT("Unknown"); break;
+	}
+	Root->SetStringField(TEXT("mirror_option"), MirrorStr);
+
+	FFloatInterval Range = Entry->GetSamplingRange();
+	Root->SetNumberField(TEXT("sampling_range_start"), Range.Min);
+	Root->SetNumberField(TEXT("sampling_range_end"), Range.Max);
+#endif
+
+	return FMonolithActionResult::Success(Root);
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -1193,6 +1358,7 @@ FMonolithActionResult FMonolithPoseSearchActions::HandleSetDatabaseSearchMode(co
 			Database->PoseSearchMode = EPoseSearchMode::PCAKDTree;
 		else if (ModeStr.Equals(TEXT("VPTree"), ESearchCase::IgnoreCase))
 			Database->PoseSearchMode = EPoseSearchMode::VPTree;
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 		else if (ModeStr.Equals(TEXT("EventOnly"), ESearchCase::IgnoreCase))
 			Database->PoseSearchMode = EPoseSearchMode::EventOnly;
 		else
@@ -1200,6 +1366,13 @@ FMonolithActionResult FMonolithPoseSearchActions::HandleSetDatabaseSearchMode(co
 			GEditor->EndTransaction();
 			return FMonolithActionResult::Error(FString::Printf(TEXT("Invalid pose_search_mode: '%s'. Use BruteForce, PCAKDTree, VPTree, or EventOnly"), *ModeStr));
 		}
+#else
+		else
+		{
+			GEditor->EndTransaction();
+			return FMonolithActionResult::Error(FString::Printf(TEXT("Invalid pose_search_mode: '%s'. Use BruteForce, PCAKDTree, or VPTree"), *ModeStr));
+		}
+#endif
 	}
 
 	// KDTree neighbors (not editor-only)
@@ -1238,10 +1411,12 @@ FMonolithActionResult FMonolithPoseSearchActions::HandleSetDatabaseSearchMode(co
 	{
 		Database->LoopingCostBias = static_cast<float>(Params->GetNumberField(TEXT("looping_cost_bias")));
 	}
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 	if (Params->HasField(TEXT("continuing_interaction_cost_bias")))
 	{
 		Database->ContinuingInteractionCostBias = static_cast<float>(Params->GetNumberField(TEXT("continuing_interaction_cost_bias")));
 	}
+#endif
 
 	GEditor->EndTransaction();
 	Database->MarkPackageDirty();
@@ -1256,7 +1431,9 @@ FMonolithActionResult FMonolithPoseSearchActions::HandleSetDatabaseSearchMode(co
 	case EPoseSearchMode::BruteForce: ModeStr = TEXT("BruteForce"); break;
 	case EPoseSearchMode::PCAKDTree:  ModeStr = TEXT("PCAKDTree"); break;
 	case EPoseSearchMode::VPTree:     ModeStr = TEXT("VPTree"); break;
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 	case EPoseSearchMode::EventOnly:  ModeStr = TEXT("EventOnly"); break;
+#endif
 	default:                          ModeStr = TEXT("Unknown"); break;
 	}
 	Root->SetStringField(TEXT("pose_search_mode"), ModeStr);
@@ -1268,7 +1445,11 @@ FMonolithActionResult FMonolithPoseSearchActions::HandleSetDatabaseSearchMode(co
 	Root->SetNumberField(TEXT("continuing_pose_cost_bias"), Database->ContinuingPoseCostBias);
 	Root->SetNumberField(TEXT("base_cost_bias"), Database->BaseCostBias);
 	Root->SetNumberField(TEXT("looping_cost_bias"), Database->LoopingCostBias);
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 	Root->SetNumberField(TEXT("continuing_interaction_cost_bias"), Database->ContinuingInteractionCostBias);
+#else
+	Root->SetNumberField(TEXT("continuing_interaction_cost_bias"), 0.0f);
+#endif
 
 	return FMonolithActionResult::Success(Root);
 }
@@ -1358,11 +1539,12 @@ FMonolithActionResult FMonolithPoseSearchActions::HandleSetDatabaseEntryTags(con
 	if (EntryIndex < 0 || EntryIndex >= NumAssets)
 		return FMonolithActionResult::Error(FString::Printf(TEXT("Invalid entry_index %d (database has %d entries)"), EntryIndex, NumAssets));
 
+#if WITH_EDITORONLY_DATA
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 	const FPoseSearchDatabaseAnimationAsset* SourceEntry = Database->GetDatabaseAnimationAsset(EntryIndex);
 	if (!SourceEntry)
 		return FMonolithActionResult::Error(FString::Printf(TEXT("Failed to get entry at index %d"), EntryIndex));
 
-#if WITH_EDITORONLY_DATA
 	// Mutate a copy; MonolithCommitDatabaseAnimationAsset writes it back before every exit.
 	FPoseSearchDatabaseAnimationAsset EntryCopy = *SourceEntry;
 	FPoseSearchDatabaseAnimationAsset* Entry = &EntryCopy;
@@ -1422,6 +1604,65 @@ FMonolithActionResult FMonolithPoseSearchActions::HandleSetDatabaseEntryTags(con
 	}
 	Root->SetStringField(TEXT("mirror_option"), MirrorStr);
 	return FMonolithActionResult::Success(Root);
+#else
+	// UE 5.5 path: mutate the struct in-place via GetMutableAnimationAssetBase
+	FPoseSearchDatabaseAnimationAssetBase* Entry = Database->GetMutableAnimationAssetBase(EntryIndex);
+	if (!Entry)
+		return FMonolithActionResult::Error(FString::Printf(TEXT("Failed to get entry at index %d"), EntryIndex));
+
+	GEditor->BeginTransaction(FText::FromString(TEXT("Set PoseSearch Database Entry Tags")));
+	Database->Modify();
+
+	if (Params->HasField(TEXT("enabled")))
+	{
+		Entry->SetIsEnabled(Params->GetBoolField(TEXT("enabled")));
+	}
+
+	if (Params->HasField(TEXT("disable_reselection")))
+	{
+		Entry->SetDisableReselection(Params->GetBoolField(TEXT("disable_reselection")));
+	}
+
+	if (Params->HasField(TEXT("mirror_option")))
+	{
+		FString MirrorStr = Params->GetStringField(TEXT("mirror_option"));
+		if (MirrorStr.Equals(TEXT("UnmirroredOnly"), ESearchCase::IgnoreCase))
+			Entry->MirrorOption = EPoseSearchMirrorOption::UnmirroredOnly;
+		else if (MirrorStr.Equals(TEXT("MirroredOnly"), ESearchCase::IgnoreCase))
+			Entry->MirrorOption = EPoseSearchMirrorOption::MirroredOnly;
+		else if (MirrorStr.Equals(TEXT("UnmirroredAndMirrored"), ESearchCase::IgnoreCase))
+			Entry->MirrorOption = EPoseSearchMirrorOption::UnmirroredAndMirrored;
+		else
+		{
+			GEditor->EndTransaction();
+			return FMonolithActionResult::Error(FString::Printf(TEXT("Invalid mirror_option: '%s'. Use UnmirroredOnly, MirroredOnly, or UnmirroredAndMirrored"), *MirrorStr));
+		}
+	}
+
+	GEditor->EndTransaction();
+	Database->MarkPackageDirty();
+
+	// Read back current state
+	TSharedPtr<FJsonObject> Root = MakeShared<FJsonObject>();
+	Root->SetStringField(TEXT("database_path"), DatabasePath);
+	Root->SetNumberField(TEXT("entry_index"), EntryIndex);
+	if (UObject* AnimAsset = Entry->GetAnimationAsset())
+	{
+		Root->SetStringField(TEXT("animation"), AnimAsset->GetPathName());
+	}
+	Root->SetBoolField(TEXT("enabled"), Entry->IsEnabled());
+	Root->SetBoolField(TEXT("disable_reselection"), Entry->IsDisableReselection());
+	FString MirrorStr;
+	switch (Entry->GetMirrorOption())
+	{
+	case EPoseSearchMirrorOption::UnmirroredOnly:        MirrorStr = TEXT("UnmirroredOnly"); break;
+	case EPoseSearchMirrorOption::MirroredOnly:          MirrorStr = TEXT("MirroredOnly"); break;
+	case EPoseSearchMirrorOption::UnmirroredAndMirrored: MirrorStr = TEXT("UnmirroredAndMirrored"); break;
+	default:                                             MirrorStr = TEXT("Unknown"); break;
+	}
+	Root->SetStringField(TEXT("mirror_option"), MirrorStr);
+	return FMonolithActionResult::Success(Root);
+#endif
 #else
 	return FMonolithActionResult::Error(TEXT("set_database_entry_tags requires editor-only data (WITH_EDITORONLY_DATA)"));
 #endif
@@ -1496,6 +1737,7 @@ static FMonolithActionResult HandleAddDatabaseEntry(const TSharedPtr<FJsonObject
 	GEditor->BeginTransaction(FText::FromString(TEXT("Add PoseSearch Database Entry")));
 	Database->Modify();
 
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 	FPoseSearchDatabaseAnimationAsset NewEntry;
 	NewEntry.AnimAsset = AnimAsset;
 #if WITH_EDITORONLY_DATA
@@ -1521,6 +1763,63 @@ static FMonolithActionResult HandleAddDatabaseEntry(const TSharedPtr<FJsonObject
 	const int32 IndexBefore = Database->GetNumAnimationAssets();
 	// NON-DEPRECATED plain-struct overload (PoseSearchDatabase.h:663) — NOT the FInstancedStruct overload.
 	Database->AddAnimationAsset(NewEntry);
+#else
+	EPoseSearchMirrorOption MirrorOption = EPoseSearchMirrorOption::UnmirroredOnly;
+	if (Params->HasField(TEXT("mirror_option")))
+	{
+		FString MirrorStr = Params->GetStringField(TEXT("mirror_option"));
+		if (MirrorStr.Equals(TEXT("UnmirroredOnly"), ESearchCase::IgnoreCase))
+			MirrorOption = EPoseSearchMirrorOption::UnmirroredOnly;
+		else if (MirrorStr.Equals(TEXT("MirroredOnly"), ESearchCase::IgnoreCase))
+			MirrorOption = EPoseSearchMirrorOption::MirroredOnly;
+		else if (MirrorStr.Equals(TEXT("UnmirroredAndMirrored"), ESearchCase::IgnoreCase))
+			MirrorOption = EPoseSearchMirrorOption::UnmirroredAndMirrored;
+		else
+		{
+			GEditor->EndTransaction();
+			return FMonolithActionResult::Error(FString::Printf(TEXT("Invalid mirror_option: '%s'. Use UnmirroredOnly, MirroredOnly, or UnmirroredAndMirrored"), *MirrorStr));
+		}
+	}
+
+	const int32 IndexBefore = Database->GetNumAnimationAssets();
+	if (UAnimSequence* Seq = Cast<UAnimSequence>(AnimAsset))
+	{
+		FPoseSearchDatabaseSequence NewAsset;
+		NewAsset.Sequence = Seq;
+		NewAsset.bEnabled = bEnabled;
+		NewAsset.MirrorOption = MirrorOption;
+		Database->AddAnimationAsset(FInstancedStruct::Make(NewAsset));
+	}
+	else if (UBlendSpace* BS = Cast<UBlendSpace>(AnimAsset))
+	{
+		FPoseSearchDatabaseBlendSpace NewAsset;
+		NewAsset.BlendSpace = BS;
+		NewAsset.bEnabled = bEnabled;
+		NewAsset.MirrorOption = MirrorOption;
+		Database->AddAnimationAsset(FInstancedStruct::Make(NewAsset));
+	}
+	else if (UAnimComposite* Comp = Cast<UAnimComposite>(AnimAsset))
+	{
+		FPoseSearchDatabaseAnimComposite NewAsset;
+		NewAsset.AnimComposite = Comp;
+		NewAsset.bEnabled = bEnabled;
+		NewAsset.MirrorOption = MirrorOption;
+		Database->AddAnimationAsset(FInstancedStruct::Make(NewAsset));
+	}
+	else if (UAnimMontage* Montage = Cast<UAnimMontage>(AnimAsset))
+	{
+		FPoseSearchDatabaseAnimMontage NewAsset;
+		NewAsset.AnimMontage = Montage;
+		NewAsset.bEnabled = bEnabled;
+		NewAsset.MirrorOption = MirrorOption;
+		Database->AddAnimationAsset(FInstancedStruct::Make(NewAsset));
+	}
+	else
+	{
+		GEditor->EndTransaction();
+		return FMonolithActionResult::Error(FString::Printf(TEXT("Unsupported asset type '%s'. Expected AnimSequence, BlendSpace, AnimComposite, or AnimMontage."), *AnimAsset->GetClass()->GetName()));
+	}
+#endif
 
 	GEditor->EndTransaction();
 	Database->MarkPackageDirty();
@@ -1654,8 +1953,8 @@ static UClass* ResolvePoseSearchNotifyClass(const FString& Kind)
 	if (Kind.Equals(TEXT("SamplingEvent"), ESearchCase::IgnoreCase))       return UAnimNotifyState_PoseSearchSamplingEvent::StaticClass();
 	if (Kind.Equals(TEXT("SamplingAttribute"), ESearchCase::IgnoreCase))   return UAnimNotifyState_PoseSearchSamplingAttribute::StaticClass();
 	if (Kind.Equals(TEXT("BranchIn"), ESearchCase::IgnoreCase))            return UAnimNotifyState_PoseSearchBranchIn::StaticClass();
-#if !(ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 8)
-	// UAnimNotifyState_PoseSearchIKWindow was removed in UE 5.8.
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6 && ENGINE_MINOR_VERSION < 8
+	// UAnimNotifyState_PoseSearchIKWindow existed in UE 5.6-5.7 and was removed in UE 5.8.
 	if (Kind.Equals(TEXT("IKWindow"), ESearchCase::IgnoreCase))            return UAnimNotifyState_PoseSearchIKWindow::StaticClass();
 #endif
 	return nullptr;
@@ -1909,7 +2208,7 @@ static FMonolithActionResult HandleValidatePoseSearchDatabase(const TSharedPtr<F
 	{
 		for (int32 i = 0; i < NumEntries; ++i)
 		{
-			const FPoseSearchDatabaseAnimationAsset* Entry = Database->GetDatabaseAnimationAsset(i);
+			const FMonolithPoseSearchAnimAsset* Entry = MonolithGetDatabaseAnimationAsset(Database, i);
 			if (!Entry) continue;
 			if (!Entry->IsSkeletonCompatible(Database->Schema))
 			{

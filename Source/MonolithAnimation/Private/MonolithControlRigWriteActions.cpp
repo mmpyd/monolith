@@ -5,7 +5,12 @@
 #include "MonolithParamSchema.h"
 #include "MonolithJsonUtils.h"
 
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 #include "ControlRigBlueprintLegacy.h"
+#else
+// UE 5.5 has not yet split the legacy header; UControlRigBlueprint lives in ControlRigBlueprint.h.
+#include "ControlRigBlueprint.h"
+#endif
 #include "RigVMModel/RigVMGraph.h"
 #include "RigVMModel/RigVMNode.h"
 #include "RigVMModel/RigVMPin.h"
@@ -15,13 +20,38 @@
 #if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 8
 // UE 5.8 relocated IRigVMAssetInterface (now an alias of IRigVMEditorAssetInterface).
 #include "RigVMEditorAsset.h"
-#else
+#elif ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
 #include "RigVMAsset.h"
+#else
+// UE 5.5 has no IRigVMAssetInterface / RigVMAsset.h. GetRigVMClient() is exposed through the
+// IRigVMClientHost interface (declared in RigVMModel/RigVMClient.h, already included above),
+// which URigVMBlueprint implements. Cast sites below use IRigVMClientHost* on 5.5.
 #endif
 #include "RigVMModel/Nodes/RigVMUnitNode.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "Editor.h"
+
+// ---------------------------------------------------------------------------
+// Cross-version RigVMClient access.
+//
+// UControlRigBlueprint reaches its FRigVMClient through different interfaces per engine:
+//   * 5.6+  : IRigVMAssetInterface (RigVMAsset.h / RigVMEditorAsset.h)
+//   * 5.5   : IRigVMClientHost (RigVMModel/RigVMClient.h) — the pre-split interface that
+//             URigVMBlueprint (CRB's base) implements. There is no IRigVMAssetInterface yet.
+// This keeps the version gate here rather than at every call site.
+// ---------------------------------------------------------------------------
+namespace
+{
+	FORCEINLINE FRigVMClient* MonolithGetRigVMClient(UControlRigBlueprint* CRB)
+	{
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6
+		return static_cast<IRigVMAssetInterface*>(CRB)->GetRigVMClient();
+#else
+		return static_cast<IRigVMClientHost*>(CRB)->GetRigVMClient();
+#endif
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Registration
@@ -91,7 +121,7 @@ static URigVMGraph* GetGraphFromBlueprint(UControlRigBlueprint* CRB, const FStri
 	}
 
 	// Search by name across all models
-	FRigVMClient* Client = static_cast<IRigVMAssetInterface*>(CRB)->GetRigVMClient();
+	FRigVMClient* Client = MonolithGetRigVMClient(CRB);
 	if (!Client)
 	{
 		OutError = TEXT("Failed to get RigVMClient");
@@ -113,7 +143,7 @@ static URigVMGraph* GetGraphFromBlueprint(UControlRigBlueprint* CRB, const FStri
 
 static URigVMController* GetControllerForGraph(UControlRigBlueprint* CRB, URigVMGraph* Graph, FString& OutError)
 {
-	FRigVMClient* Client = static_cast<IRigVMAssetInterface*>(CRB)->GetRigVMClient();
+	FRigVMClient* Client = MonolithGetRigVMClient(CRB);
 	if (!Client)
 	{
 		OutError = TEXT("Failed to get RigVMClient");
