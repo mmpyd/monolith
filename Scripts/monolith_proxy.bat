@@ -27,5 +27,11 @@ if %errorlevel% equ 0 (
     exit /b %errorlevel%
 )
 
+:: Try Unreal Engine bundled Python
+if exist "D:\UE_5.5\Engine\Binaries\ThirdParty\Python3\Win64\python.exe" (
+    "D:\UE_5.5\Engine\Binaries\ThirdParty\Python3\Win64\python.exe" "%~dp0monolith_proxy.py" %*
+    exit /b %errorlevel%
+)
+
 echo [monolith-proxy] ERROR: Python 3 not found. Install Python 3.8+ from https://python.org 1>&2
 exit /b 1
